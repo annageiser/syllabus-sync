@@ -84,6 +84,7 @@ async def upload_file(file: UploadFile = File(...)):
         
         # Route to appropriate parser based on file extension
         try:
+            parser = None
             if file_extension == '.pdf':
                 parser = PDFParser()
                 events = parser.parse(tmp_path)
@@ -102,6 +103,8 @@ async def upload_file(file: UploadFile = File(...)):
                     status_code=400, 
                     detail=f"Unsupported file format: {file_extension}. Supported formats: {', '.join(supported_formats)}"
                 )
+            
+            source = parser.source if parser else "Unknown"
         except RuntimeError as e:
             # Configuration/setup error (e.g., Vertex AI)
             raise HTTPException(
@@ -110,9 +113,9 @@ async def upload_file(file: UploadFile = File(...)):
             )
         
         if config.DEBUG:
-            print(f"Extracted {len(events)} events from {file.filename}")
+            print(f"Extracted {len(events)} events from {file.filename} using {source}")
             
-        return {"events": events}
+        return {"events": events, "extraction_source": source}
         
     except HTTPException:
         # Re-raise HTTP exceptions

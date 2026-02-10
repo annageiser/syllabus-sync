@@ -9,8 +9,6 @@ import { Calendar, Download, RefreshCw } from 'lucide-react';
 
 // API configuration from environment variable
 const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
-
-
 interface Event {
   title: string;
   date: string;
@@ -21,6 +19,7 @@ interface Event {
 
 export default function Home() {
   const [events, setEvents] = useState<Event[]>([]);
+  const [extractionSource, setExtractionSource] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -37,6 +36,7 @@ export default function Home() {
         },
       });
       setEvents(response.data.events);
+      setExtractionSource(response.data.extraction_source);
     } catch (err: any) {
       console.error(err);
       let errorMessage = 'Failed to process file. Please try again.';
@@ -114,21 +114,29 @@ export default function Home() {
             </div>
           )}
 
-          {error && (
-            <div className="mt-4 bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded">
+          {error && ( // Corrected the closing parenthesis for the error div
+            <div className="mt-4 bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded" role="alert">
               {error}
             </div>
           )}
 
           {events.length > 0 && (
-            <div className="mt-8">
-              <div className="flex justify-between items-center mb-4">
-                <h2 className="text-xl font-semibold text-gray-800">Extracted Events</h2>
+            <section className="mt-8" aria-labelledby="extracted-events-heading">
+              <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center mb-4 gap-4">
+                <div>
+                  <h2 id="extracted-events-heading" className="text-xl font-semibold text-gray-800">Extracted Events</h2>
+                  {extractionSource && (
+                    <p className="text-xs text-gray-500 mt-1">
+                      Powered by: <span className="font-medium text-blue-600">{extractionSource}</span>
+                    </p>
+                  )}
+                </div>
                 <button
                   onClick={handleExportICS}
-                  className="flex items-center px-4 py-2 bg-green-600 text-white rounded hover:bg-green-700 transition"
+                  className="flex items-center px-4 py-2 bg-green-600 text-white rounded hover:bg-green-700 transition w-full sm:w-auto justify-center focus:ring-2 focus:ring-offset-2 focus:ring-green-500"
+                  aria-label="Export all events to ICS calendar file"
                 >
-                  <Download className="mr-2 h-4 w-4" /> Export to Calendar (.ics)
+                  <Download className="mr-2 h-4 w-4" aria-hidden="true" /> Export to Calendar (.ics)
                 </button>
               </div>
               <EventTable
@@ -136,7 +144,7 @@ export default function Home() {
                 onUpdate={handleUpdateEvent}
                 onDelete={handleDeleteEvent}
               />
-            </div>
+            </section>
           )}
         </div>
       </div>
