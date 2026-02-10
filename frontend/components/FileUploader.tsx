@@ -35,7 +35,7 @@ const FileUploader: React.FC<FileUploaderProps> = ({ onFileUpload }) => {
                 className="hidden"
                 id="file-upload"
                 onChange={handleChange}
-                accept=".pdf,.xlsx,.docx,.html"
+                accept=".pdf,.xlsx,.xls,.docx,.html,.htm"
             />
             <label htmlFor="file-upload" className="cursor-pointer block">
                 <div className="text-4xl mb-4">📄</div>
