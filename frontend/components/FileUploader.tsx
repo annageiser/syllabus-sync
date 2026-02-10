@@ -24,11 +24,22 @@ const FileUploader: React.FC<FileUploaderProps> = ({ onFileUpload }) => {
         }
     };
 
+    const handleKeyDown = useCallback((e: React.KeyboardEvent<HTMLDivElement>) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault();
+            document.getElementById('file-upload')?.click();
+        }
+    }, []);
+
     return (
         <div
-            className="border-2 border-dashed border-gray-300 rounded-lg p-10 text-center hover:bg-gray-50 transition-colors cursor-pointer"
+            className="border-2 border-dashed border-gray-300 rounded-lg p-10 text-center hover:bg-gray-50 transition-colors cursor-pointer focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2"
             onDrop={handleDrop}
             onDragOver={handleDragOver}
+            onKeyDown={handleKeyDown}
+            tabIndex={0}
+            role="button"
+            aria-label="Upload syllabus file (Double-click or press Enter to browse files)"
         >
             <input
                 type="file"
@@ -38,12 +49,12 @@ const FileUploader: React.FC<FileUploaderProps> = ({ onFileUpload }) => {
                 accept=".pdf,.xlsx,.xls,.docx,.html,.htm"
             />
             <label htmlFor="file-upload" className="cursor-pointer block">
-                <div className="text-4xl mb-4">📄</div>
+                <div className="text-4xl mb-4" aria-hidden="true">📄</div>
                 <h3 className="text-lg font-semibold mb-2">Drag & Drop your schedule here</h3>
                 <p className="text-gray-500 text-sm">Supports PDF, Excel, Word, HTML</p>
-                <button className="mt-4 px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 transition">
+                <div className="mt-4 px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 transition inline-block">
                     Browse Files
-                </button>
+                </div>
             </label>
         </div>
     );

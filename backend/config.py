@@ -18,10 +18,13 @@ class Config:
     # Google AI (Free Tier)
     GEMINI_API_KEY: str = os.getenv("GEMINI_API_KEY", "")
     
-    # Google Cloud / Vertex AI (Legacy/Optional)
+    # Google Cloud / Vertex AI (Advanced/Enterprise)
     GOOGLE_CLOUD_PROJECT: str = os.getenv("GOOGLE_CLOUD_PROJECT", "")
     VERTEX_AI_LOCATION: str = os.getenv("VERTEX_AI_LOCATION", "us-central1")
-    VERTEX_AI_MODEL: str = os.getenv("VERTEX_AI_MODEL", "gemini-1.5-flash-001")
+    
+    # Model configuration (Gemini API or Vertex AI)
+    # This identifies WHICH Gemini model to use
+    GEMINI_MODEL: str = os.getenv("GEMINI_MODEL", os.getenv("VERTEX_AI_MODEL", "gemini-1.5-flash"))
     
     # Server Configuration
     BACKEND_HOST: str = os.getenv("BACKEND_HOST", "0.0.0.0")
@@ -46,10 +49,10 @@ class Config:
         print("=" * 50)
         print("Syllabus-Sync Backend Configuration")
         print("=" * 50)
-        print(f"Gemini API Key: {'Set' if cls.GEMINI_API_KEY else 'Not Set'}")
-        print(f"Google Cloud Project: {cls.GOOGLE_CLOUD_PROJECT}")
-        print(f"Vertex AI Location: {cls.VERTEX_AI_LOCATION}")
-        print(f"Vertex AI Model: {cls.VERTEX_AI_MODEL}")
+        print(f"Active AI Key: {'Set' if cls.GEMINI_API_KEY else 'Not Set'}")
+        print(f"Selected Model: {cls.GEMINI_MODEL}")
+        print(f"Cloud Project: {cls.GOOGLE_CLOUD_PROJECT if cls.GOOGLE_CLOUD_PROJECT else 'N/A'}")
+        print(f"Location: {cls.VERTEX_AI_LOCATION}")
         print(f"Backend Host: {cls.BACKEND_HOST}")
         print(f"Backend Port: {cls.BACKEND_PORT}")
         print(f"CORS Origins: {cls.CORS_ORIGINS}")

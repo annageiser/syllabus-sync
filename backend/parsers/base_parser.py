@@ -48,19 +48,23 @@ class BaseParser:
             if config.DEBUG:
                 print("Initializing with Google AI SDK (API Key)")
             genai.configure(api_key=self.api_key)
-            self.model = genai.GenerativeModel(config.VERTEX_AI_MODEL.replace("001", "latest") if "flash" in config.VERTEX_AI_MODEL else "gemini-1.5-flash")
+            model_name = config.GEMINI_MODEL
+            self.model = genai.GenerativeModel(model_name)
+            self.source = f"Gemini Cloud AI ({model_name})"
         elif config.GOOGLE_CLOUD_PROJECT:
             if not HAS_VERTEX:
                 raise RuntimeError("google-cloud-aiplatform package not installed")
             if config.DEBUG:
                 print(f"Initializing with Vertex AI (Project: {config.GOOGLE_CLOUD_PROJECT})")
             vertexai.init(project=config.GOOGLE_CLOUD_PROJECT, location=config.VERTEX_AI_LOCATION)
-            self.model = VertexModel(config.VERTEX_AI_MODEL)
+            self.model = VertexModel(config.GEMINI_MODEL)
             self.use_vertex = True
+            self.source = f"Vertex AI ({config.GEMINI_MODEL})"
         else:
             if config.DEBUG:
                 print("WARNING: No AI configuration found. Using HEURISTIC OFFLINE EXTRACTION only.")
             self.model = None
+            self.source = "Local Heuristic (Offline)"
         
         self.current_year = config.DEFAULT_YEAR
     
@@ -288,11 +292,15 @@ Do not include markdown formatting. Return only the JSON array.
         """
         Extract events from text content using Vertex AI or Google AI.
         Falls back to heuristic extraction if AI fails or is not configured.
+        
+        Returns:
+            List of event dictionaries.
         """
         # Fallback if no AI model is configured
         if not self.model:
             if config.DEBUG:
                 print("No AI model configured, using heuristic extraction")
+            self.source = "Local Heuristic (Offline)"
             return self.heuristic_extraction(text_content)
 
         prompt = f"""
@@ -333,7 +341,9 @@ Rules:
             # Parse JSON
             try:
                 events = json.loads(response_text)
-                if not isinstance(events, list): return self.heuristic_extraction(text_content)
+                if not isinstance(events, list): 
+                    self.source = "Local Heuristic (Fallback: Invalid JSON structure)"
+                    return self.heuristic_extraction(text_content)
                 
                 normalized_events = []
                 for event in events:
@@ -359,14 +369,17 @@ Rules:
                     
                     normalized_events.append(normalized_event)
                 
+                # self.source is already set in __init__ for the AI case
                 return normalized_events
                 
             except json.JSONDecodeError:
                 if config.DEBUG: print("JSON Decode Error, falling back to heuristic")
+                self.source = "Local Heuristic (Fallback: JSON Parse Error)"
                 return self.heuristic_extraction(text_content)
                 
         except Exception as e:
             if config.DEBUG:
                 print(f"AI Extraction failed: {e}")
                 print("Falling back to HEURISTIC OFFLINE EXTRACTION")
+            self.source = f"Local Heuristic (Fallback: AI Error - {str(e)})"
             return self.heuristic_extraction(text_content)

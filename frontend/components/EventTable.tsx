@@ -88,7 +88,7 @@ const EventTable: React.FC<EventTableProps> = ({ events, onUpdate, onDelete }) =
                             <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
                                 <button
                                     onClick={() => onDelete(index)}
-                                    className="text-red-600 hover:text-red-900 transition-colors"
+                                    className="text-red-600 hover:text-red-900 transition-colors focus:outline-none focus:ring-2 focus:ring-red-500 rounded px-1"
                                     aria-label={`Delete event ${event.title}`}
                                 >
                                     Delete
