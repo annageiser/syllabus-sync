@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { Trash2, Calendar as CalendarIcon, Tag, FileText, Info } from 'lucide-react';
 
 interface Event {
     title: string;
@@ -17,87 +18,101 @@ interface EventTableProps {
 const EventTable: React.FC<EventTableProps> = ({ events, onUpdate, onDelete }) => {
     if (events.length === 0) return null;
 
+    const eventTypes = [
+        { value: 'lecture', label: 'Lecture' },
+        { value: 'assignment', label: 'Assignment' },
+        { value: 'exam', label: 'Exam' },
+        { value: 'project', label: 'Project' },
+        { value: 'event', label: 'Other' },
+    ];
+
     return (
-        <div className="overflow-x-auto mt-8">
-            <table className="min-w-full bg-white border border-gray-200 shadow-sm rounded-lg" role="table" aria-label="Event list">
-                <thead className="bg-gray-50">
-                    <tr>
-                        <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Module</th>
-                        <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Title</th>
-                        <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Date</th>
-                        <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Type</th>
-                        <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Description</th>
-                        <th scope="col" className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Actions</th>
-                    </tr>
-                </thead>
-                <tbody className="divide-y divide-gray-200">
-                    {events.map((event, index) => (
-                        <tr key={index} className="hover:bg-gray-50 transition-colors">
-                            <td className="px-6 py-4">
-                                <input
-                                    type="text"
-                                    value={event.module || ''}
-                                    onChange={(e) => onUpdate(index, { ...event, module: e.target.value })}
-                                    className="w-full border-gray-300 rounded focus:ring-blue-500 focus:border-blue-500"
-                                    placeholder="Course code..."
-                                    aria-label={`Module name ${index + 1}`}
-                                />
-                            </td>
-                            <td className="px-6 py-4">
-                                <input
-                                    type="text"
-                                    value={event.title}
-                                    onChange={(e) => onUpdate(index, { ...event, title: e.target.value })}
-                                    className="w-full border-gray-300 rounded focus:ring-blue-500 focus:border-blue-500"
-                                    aria-label={`Event title ${index + 1}`}
-                                />
-                            </td>
-                            <td className="px-6 py-4">
-                                <input
-                                    type="date"
-                                    value={event.date}
-                                    onChange={(e) => onUpdate(index, { ...event, date: e.target.value })}
-                                    className="w-full border-gray-300 rounded focus:ring-blue-500 focus:border-blue-500"
-                                    aria-label={`Event date ${index + 1}`}
-                                />
-                            </td>
-                            <td className="px-6 py-4">
-                                <select
-                                    value={event.type}
-                                    onChange={(e) => onUpdate(index, { ...event, type: e.target.value })}
-                                    className="w-full border-gray-300 rounded focus:ring-blue-500 focus:border-blue-500"
-                                    aria-label={`Event type ${index + 1}`}
-                                >
-                                    <option value="lecture">Lecture</option>
-                                    <option value="assignment">Assignment</option>
-                                    <option value="exam">Exam</option>
-                                    <option value="project">Project</option>
-                                    <option value="event">Event</option>
-                                </select>
-                            </td>
-                            <td className="px-6 py-4">
-                                <input
-                                    type="text"
-                                    value={event.description || ''}
-                                    onChange={(e) => onUpdate(index, { ...event, description: e.target.value })}
-                                    className="w-full border-gray-300 rounded focus:ring-blue-500 focus:border-blue-500"
-                                    placeholder="Optional notes..."
-                                    aria-label={`Event description ${index + 1}`}
-                                />
-                            </td>
-                            <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
-                                <button
-                                    onClick={() => onDelete(index)}
-                                    className="text-red-600 hover:text-red-900 transition-colors focus:outline-none focus:ring-2 focus:ring-red-500 rounded px-1"
-                                    aria-label={`Delete event ${event.title}`}
-                                >
-                                    Delete
-                                </button>
-                            </td>
-                        </tr>
-                    ))}
-                </tbody>
-            </table>
+        <div className="mt-8 space-y-4">
+            <div className="hidden md:grid grid-cols-12 gap-4 px-6 py-3 text-xs font-black text-slate-500 uppercase tracking-[0.2em] opacity-80">
+                <div className="col-span-2 flex items-center gap-2"><Tag size={12} /> Module</div>
+                <div className="col-span-3 flex items-center gap-2"><FileText size={12} /> Event Title</div>
+                <div className="col-span-2 flex items-center gap-2"><CalendarIcon size={12} /> Date</div>
+                <div className="col-span-2 flex items-center gap-2"><Tag size={12} /> Category</div>
+                <div className="col-span-2 flex items-center gap-2"><Info size={12} /> Notes</div>
+                <div className="col-span-1"></div>
+            </div>
+
+            <div className="space-y-4">
+                {events.map((event, index) => (
+                    <div
+                        key={index}
+                        id={`event-row-${index}`}
+                        className="glass p-6 md:p-3 md:grid md:grid-cols-12 md:gap-4 items-center animate-slide-up group"
+                        style={{ animationDelay: `${index * 50}ms` }}
+                    >
+                        <div className="col-span-2 mb-3 md:mb-0">
+                            <input
+                                id={`event-module-${index}`}
+                                type="text"
+                                value={event.module || ''}
+                                onChange={(e) => onUpdate(index, { ...event, module: e.target.value })}
+                                className="w-full text-sm py-2 px-4 rounded-xl border-0 focus:ring-2 focus:ring-indigo-500 font-bold"
+                                placeholder="Module..."
+                            />
+                        </div>
+
+                        <div className="col-span-3 mb-3 md:mb-0">
+                            <input
+                                id={`event-title-${index}`}
+                                type="text"
+                                value={event.title}
+                                onChange={(e) => onUpdate(index, { ...event, title: e.target.value })}
+                                className="w-full text-sm py-2 px-4 rounded-xl border-0 focus:ring-2 focus:ring-indigo-500 font-medium"
+                            />
+                        </div>
+
+                        <div className="col-span-2 mb-3 md:mb-0">
+                            <input
+                                id={`event-date-${index}`}
+                                type="date"
+                                value={event.date}
+                                onChange={(e) => onUpdate(index, { ...event, date: e.target.value })}
+                                className="w-full text-sm py-2 px-4 rounded-xl border-0 focus:ring-2 focus:ring-indigo-500"
+                            />
+                        </div>
+
+                        <div className="col-span-2 mb-3 md:mb-0">
+                            <select
+                                id={`event-type-${index}`}
+                                value={event.type}
+                                onChange={(e) => onUpdate(index, { ...event, type: e.target.value })}
+                                className="w-full text-sm py-2 px-4 rounded-xl border-0 focus:ring-2 focus:ring-indigo-500 appearance-none bg-no-repeat bg-[right_1rem_center]"
+                            >
+                                {eventTypes.map(t => (
+                                    <option key={t.value} value={t.value}>{t.label}</option>
+                                ))}
+                            </select>
+                        </div>
+
+                        <div className="col-span-2 mb-3 md:mb-0">
+                            <input
+                                id={`event-desc-${index}`}
+                                type="text"
+                                value={event.description || ''}
+                                onChange={(e) => onUpdate(index, { ...event, description: e.target.value })}
+                                className="w-full text-sm py-2 px-4 rounded-xl border-0 focus:ring-2 focus:ring-indigo-500 italic opacity-80"
+                                placeholder="..."
+                            />
+                        </div>
+
+                        <div className="col-span-1 flex justify-end">
+                            <button
+                                id={`delete-event-${index}`}
+                                onClick={() => onDelete(index)}
+                                className="p-3 text-slate-400 hover:text-rose-500 hover:bg-rose-500/10 rounded-2xl transition-all"
+                                aria-label="Delete Event"
+                            >
+                                <Trash2 size={20} />
+                            </button>
+                        </div>
+                    </div>
+                ))}
+            </div>
         </div>
     );
 };

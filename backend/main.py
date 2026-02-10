@@ -1,9 +1,10 @@
 from fastapi import FastAPI, UploadFile, File, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import List, Optional
+import io
 import shutil
 import os
 import tempfile
@@ -180,7 +181,13 @@ async def generate_ics(request: Request):
         if config.DEBUG:
             print(f"Generated ICS file with {len(events)} events")
         
-        return {"ics_content": ics_content.decode('utf-8')}
+        return Response(
+            content=ics_content,
+            media_type="text/calendar",
+            headers={
+                "Content-Disposition": "attachment; filename=syllabus-events.ics"
+            }
+        )
     except Exception as e:
         if config.DEBUG:
             import traceback
