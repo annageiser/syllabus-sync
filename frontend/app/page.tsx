@@ -7,10 +7,16 @@ import FileUploader from '../components/FileUploader';
 import EventTable from '../components/EventTable';
 import { Calendar, Download, RefreshCw } from 'lucide-react';
 
+// API configuration from environment variable
+const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
+
+
 interface Event {
   title: string;
   date: string;
   type: string;
+  description?: string;
+  module?: string;
 }
 
 export default function Home() {
@@ -25,15 +31,26 @@ export default function Home() {
     formData.append('file', file);
 
     try {
-      const response = await axios.post('http://localhost:8000/upload', formData, {
+      const response = await axios.post(`${API_URL}/upload`, formData, {
         headers: {
           'Content-Type': 'multipart/form-data',
         },
       });
       setEvents(response.data.events);
-    } catch (err) {
+    } catch (err: any) {
       console.error(err);
-      setError('Failed to process file. Please try again.');
+      let errorMessage = 'Failed to process file. Please try again.';
+
+      if (err.response?.data?.detail) {
+        // Use backend error message if available
+        errorMessage = typeof err.response.data.detail === 'string'
+          ? err.response.data.detail
+          : 'Failed to process file. Please check the file format.';
+      } else if (err.message === 'Network Error') {
+        errorMessage = 'Cannot connect to the server. Please ensure the backend is running.';
+      }
+
+      setError(errorMessage);
     } finally {
       setLoading(false);
     }
@@ -57,20 +74,23 @@ export default function Home() {
         setError('No events to export.');
         return;
       }
-      console.log("Sending events to backend:", events);
 
-      const response = await axios.post('http://localhost:8000/generate-ics', events);
+      const response = await axios.post(`${API_URL}/generate-ics`, events);
       const blob = new Blob([response.data.ics_content], { type: 'text/calendar;charset=utf-8' });
       saveAs(blob, 'syllabus-events.ics');
     } catch (err: any) {
       console.error("Export Error:", err);
-      if (err.response) {
-        console.error("Response Data:", err.response.data);
-        console.error("Response Status:", err.response.status);
-        setError(`Failed to generate ICS file: ${JSON.stringify(err.response.data)}`);
-      } else {
-        setError('Failed to generate ICS file.');
+
+      let errorMessage = 'Failed to generate ICS file.';
+      if (err.response?.data?.detail) {
+        errorMessage = typeof err.response.data.detail === 'string'
+          ? err.response.data.detail
+          : 'Failed to generate ICS file. Please try again.';
+      } else if (err.message === 'Network Error') {
+        errorMessage = 'Cannot connect to the server. Please ensure the backend is running.';
       }
+
+      setError(errorMessage);
     }
   };
 

@@ -7,3 +7,10 @@ openpyxl
 python-docx
 beautifulsoup4
 icalendar
+google-cloud-aiplatform
+google-generativeai
+google-auth
+google-auth-oauthlib
+google-auth-httplib2
+python-dotenv
+
