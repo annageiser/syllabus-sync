@@ -5,7 +5,6 @@ import axios from 'axios';
 import { saveAs } from 'file-saver';
 import FileUploader from '../components/FileUploader';
 import EventTable from '../components/EventTable';
-import EventHeatmap from '../components/EventHeatmap';
 import {
   Calendar,
   Download,
@@ -225,9 +224,6 @@ export default function Home() {
                   <Download className="mr-3 h-6 w-6" /> Export to Calendar
                 </button>
               </div>
-
-              {/* Workload Heatmap */}
-              <EventHeatmap events={events} />
 
               <div className="relative">
                 <EventTable
