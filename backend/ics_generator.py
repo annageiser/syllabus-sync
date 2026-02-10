@@ -66,10 +66,10 @@ class ICSGenerator:
                 # If module wasn't in title, add to description
                 description_parts.append(f"Module: {module}")
             if description_parts:
-                event.add('description', '\\n'.join(description_parts))
+                event.add('description', '\n'.join(description_parts))
             
             # Date parsing
-            start_date = item.get('check_in') or item.get('date')
+            start_date = item.get('date')
 
             if start_date:
                 try:
