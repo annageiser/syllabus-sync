@@ -9,6 +9,8 @@ interface Event {
     description?: string;
     module?: string;
     reminders?: number[];
+    confidence?: number;
+    low_confidence_fields?: string[];
 }
 
 interface EventTableProps {
@@ -50,7 +52,10 @@ const EventTable: React.FC<EventTableProps> = ({ events, onUpdate, onDelete }) =
             </div>
 
             <div className="space-y-4">
-                {events.map((event, index) => (
+                {events.map((event, index) => {
+                    const lowFields = new Set(event.low_confidence_fields || []);
+                    const warnClass = (field: string) => lowFields.has(field) ? 'ring-2 ring-amber-400/70' : '';
+                    return (
                     <div
                         key={index}
                         id={`event-row-${index}`}
@@ -74,7 +79,7 @@ const EventTable: React.FC<EventTableProps> = ({ events, onUpdate, onDelete }) =
                                 type="text"
                                 value={event.title}
                                 onChange={(e) => onUpdate(index, { ...event, title: e.target.value })}
-                                className="w-full text-sm py-2 px-4 rounded-xl border-0 focus:ring-2 focus:ring-indigo-500 font-medium"
+                                className={`w-full text-sm py-2 px-4 rounded-xl border-0 focus:ring-2 focus:ring-indigo-500 font-medium ${warnClass('title')}`}
                             />
                         </div>
 
@@ -84,7 +89,7 @@ const EventTable: React.FC<EventTableProps> = ({ events, onUpdate, onDelete }) =
                                 type="date"
                                 value={event.date}
                                 onChange={(e) => onUpdate(index, { ...event, date: e.target.value })}
-                                className="w-full text-sm py-2 px-4 rounded-xl border-0 focus:ring-2 focus:ring-indigo-500"
+                                className={`w-full text-sm py-2 px-4 rounded-xl border-0 focus:ring-2 focus:ring-indigo-500 ${warnClass('date')}`}
                             />
                         </div>
 
@@ -94,7 +99,7 @@ const EventTable: React.FC<EventTableProps> = ({ events, onUpdate, onDelete }) =
                                 type="time"
                                 value={event.time}
                                 onChange={(e) => onUpdate(index, { ...event, time: e.target.value })}
-                                className="w-full text-sm py-2 px-4 rounded-xl border-0 focus:ring-2 focus:ring-indigo-500"
+                                className={`w-full text-sm py-2 px-4 rounded-xl border-0 focus:ring-2 focus:ring-indigo-500 ${warnClass('time')}`}
                             />
                         </div>
 
@@ -103,7 +108,7 @@ const EventTable: React.FC<EventTableProps> = ({ events, onUpdate, onDelete }) =
                                 id={`event-type-${index}`}
                                 value={event.type}
                                 onChange={(e) => onUpdate(index, { ...event, type: e.target.value })}
-                                className="w-full text-sm py-2 px-4 rounded-xl border-0 focus:ring-2 focus:ring-indigo-500 appearance-none bg-no-repeat bg-[right_1rem_center]"
+                                className={`w-full text-sm py-2 px-4 rounded-xl border-0 focus:ring-2 focus:ring-indigo-500 appearance-none bg-no-repeat bg-[right_1rem_center] ${warnClass('type')}`}
                             >
                                 {eventTypes.map(t => (
                                     <option key={t.value} value={t.value}>{t.label}</option>
@@ -122,7 +127,20 @@ const EventTable: React.FC<EventTableProps> = ({ events, onUpdate, onDelete }) =
                             />
                         </div>
 
-                        <div className="col-span-12 mt-3">
+                        <div className="col-span-12 mt-3 flex flex-wrap items-center gap-3">
+                            {typeof event.confidence === 'number' && (
+                                <span className="text-xs font-bold px-3 py-1 rounded-full bg-slate-500/10 text-slate-400 border border-slate-500/20">
+                                    Confidence: {(event.confidence * 100).toFixed(0)}%
+                                </span>
+                            )}
+                            {lowFields.size > 0 && (
+                                <span className="text-xs font-bold px-3 py-1 rounded-full bg-amber-500/10 text-amber-500 border border-amber-500/30">
+                                    Needs review: {Array.from(lowFields).join(', ')}
+                                </span>
+                            )}
+                        </div>
+
+                        <div className="col-span-12 mt-2">
                             <div className="flex items-center gap-2 text-[10px] font-black uppercase tracking-[0.2em] text-slate-500">
                                 <Bell size={12} /> Reminders
                                 <span className="text-[11px] font-medium normal-case tracking-normal text-slate-400">Pick one or more times.</span>
@@ -167,7 +185,7 @@ const EventTable: React.FC<EventTableProps> = ({ events, onUpdate, onDelete }) =
                             </button>
                         </div>
                     </div>
-                ))}
+                );})}
             </div>
         </div>
     );

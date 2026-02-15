@@ -222,6 +222,47 @@ class BaseParser:
         if event.get("description"):
             event["description"] = self._clean_description(event["description"])
         return event
+
+    def _evaluate_confidence(self, event: dict, source: str) -> tuple[float, list]:
+        score = 0.5
+        low_fields = []
+
+        title = event.get("title", "").strip()
+        if title and len(title) > 8:
+            score += 0.05
+        else:
+            low_fields.append("title")
+
+        date_val = event.get("date")
+        if date_val and re.match(r"^\d{4}-\d{2}-\d{2}$", str(date_val)):
+            score += 0.3
+        else:
+            low_fields.append("date")
+
+        evt_type = (event.get("type") or "").lower()
+        if evt_type in {"lecture", "assignment", "exam", "project", "event"}:
+            score += 0.05
+        else:
+            low_fields.append("type")
+
+        time_val = event.get("time") or event.get("start_time")
+        if time_val and re.match(r"^\d{2}:\d{2}(:\d{2})?$", str(time_val)):
+            score += 0.05
+        else:
+            low_fields.append("time")
+
+        if event.get("description"):
+            score += 0.05
+
+        if source == "heuristic":
+            score -= 0.1
+        if self.fallback_reason:
+            score -= 0.05
+
+        score = max(0.0, min(1.0, score))
+        if score > 0.6:
+            low_fields = [f for f in low_fields if f != "title"]
+        return score, low_fields
     
     def extract_events_with_ai(self, text_content: str) -> list:
         """
@@ -405,6 +446,10 @@ Examples of good titles:
 
                 normalized_events.append(self._clean_event_fields(normalized_event))
 
+                confidence, low_fields = self._evaluate_confidence(normalized_events[-1], "ai")
+                normalized_events[-1]["confidence"] = confidence
+                normalized_events[-1]["low_confidence_fields"] = low_fields
+
             # Store successful result in cache
             if cache_key:
                 try:
@@ -530,7 +575,11 @@ Examples of good titles:
                     "description": " ".join(description_lines)
                 }
 
-                events.append(self._clean_event_fields(event))
+                cleaned = self._clean_event_fields(event)
+                confidence, low_fields = self._evaluate_confidence(cleaned, "heuristic")
+                cleaned["confidence"] = confidence
+                cleaned["low_confidence_fields"] = low_fields
+                events.append(cleaned)
 
         return events
 
