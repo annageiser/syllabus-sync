@@ -17,6 +17,7 @@ import tempfile
 import json
 import uuid
 import contextlib
+import logging
 
 from parsers.pdf_parser import PDFParser
 from parsers.excel_parser import ExcelParser
@@ -30,6 +31,8 @@ app = FastAPI(
     description="Privacy-first API for extracting events from academic syllabi and generating calendar files.",
     version="0.1.0"
 )
+
+logger = logging.getLogger("syllabus_sync")
 
 
 # Security and operational limits
@@ -102,9 +105,9 @@ async def save_upload_to_temp(file: UploadFile) -> tuple[str, str]:
 @app.exception_handler(RequestValidationError)
 async def validation_exception_handler(request: Request, exc: RequestValidationError):
     """Handle validation errors with detailed information and return 400."""
-    if config.DEBUG:
-        print(f"Validation Error: {exc.errors()}")
-        print(f"Body: {await request.body()}")
+    body_bytes = await request.body()
+    logger.warning("Validation Error: %s", exc.errors())
+    logger.warning("Body: %s", body_bytes)
     return JSONResponse(
         status_code=400,
         content={"detail": exc.errors(), "body": str(exc.body)},
@@ -164,6 +167,7 @@ async def upload_file(request: Request, file: UploadFile = File(...)):
         source = parser.source if parser else "Unknown"
         processing_mode = getattr(parser, "processing_mode", "unknown")
         fallback_reason = getattr(parser, "fallback_reason", None)
+        extraction_warning = getattr(parser, "extraction_warning", None)
 
         if config.DEBUG:
             print(f"Extracted {len(events)} events from {file.filename} using {source} (mode={processing_mode}, fallback={fallback_reason})")
@@ -173,6 +177,7 @@ async def upload_file(request: Request, file: UploadFile = File(...)):
             "extraction_source": source,
             "processing_mode": processing_mode,
             "fallback_reason": fallback_reason,
+            "extraction_warning": extraction_warning,
         }
 
     except HTTPException:
@@ -233,6 +238,7 @@ async def upload_file_async(request: Request, file: UploadFile = File(...)):
             "source": None,
             "processing_mode": None,
             "fallback_reason": None,
+            "extraction_warning": None,
             "progress": "queued",
             "created_at": pytime.time(),
             "started_at": None,
@@ -379,6 +385,7 @@ async def process_job(job_id: str):
         job["source"] = parser.source
         job["processing_mode"] = getattr(parser, "processing_mode", None)
         job["fallback_reason"] = getattr(parser, "fallback_reason", None)
+        job["extraction_warning"] = getattr(parser, "extraction_warning", None)
         job["status"] = "completed"
         job["progress"] = "completed"
         job["finished_at"] = pytime.time()
@@ -443,6 +450,7 @@ async def stream_job(job_id: str):
                 "source": job.get("source"),
                 "processing_mode": job.get("processing_mode"),
                 "fallback_reason": job.get("fallback_reason"),
+                "extraction_warning": job.get("extraction_warning"),
                 "filename": job.get("filename"),
             }
             payload_str = json.dumps(payload)

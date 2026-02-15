@@ -4,6 +4,7 @@ import { Trash2, Calendar as CalendarIcon, Tag, FileText, Info, Bell } from 'luc
 interface Event {
     title: string;
     date: string;
+    time: string;
     type: string;
     description?: string;
     module?: string;
@@ -42,8 +43,9 @@ const EventTable: React.FC<EventTableProps> = ({ events, onUpdate, onDelete }) =
                 <div className="col-span-2 flex items-center gap-2"><Tag size={12} /> Module</div>
                 <div className="col-span-3 flex items-center gap-2"><FileText size={12} /> Event Title</div>
                 <div className="col-span-2 flex items-center gap-2"><CalendarIcon size={12} /> Date</div>
+                <div className="col-span-1 flex items-center gap-2"><CalendarIcon size={12} /> Time</div>
                 <div className="col-span-2 flex items-center gap-2"><Tag size={12} /> Category</div>
-                <div className="col-span-2 flex items-center gap-2"><Info size={12} /> Notes</div>
+                <div className="col-span-1 flex items-center gap-2"><Info size={12} /> Notes</div>
                 <div className="col-span-1"></div>
             </div>
 
@@ -86,6 +88,16 @@ const EventTable: React.FC<EventTableProps> = ({ events, onUpdate, onDelete }) =
                             />
                         </div>
 
+                        <div className="col-span-1 mb-3 md:mb-0">
+                            <input
+                                id={`event-time-${index}`}
+                                type="time"
+                                value={event.time}
+                                onChange={(e) => onUpdate(index, { ...event, time: e.target.value })}
+                                className="w-full text-sm py-2 px-4 rounded-xl border-0 focus:ring-2 focus:ring-indigo-500"
+                            />
+                        </div>
+
                         <div className="col-span-2 mb-3 md:mb-0">
                             <select
                                 id={`event-type-${index}`}
@@ -99,7 +111,7 @@ const EventTable: React.FC<EventTableProps> = ({ events, onUpdate, onDelete }) =
                             </select>
                         </div>
 
-                        <div className="col-span-2 mb-3 md:mb-0">
+                        <div className="col-span-1 mb-3 md:mb-0">
                             <input
                                 id={`event-desc-${index}`}
                                 type="text"
