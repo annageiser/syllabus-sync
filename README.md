@@ -117,16 +117,14 @@ cd Syllabus-Sync
 #### 2. Backend Setup
 
 ```bash
-cd backend
-
-# Create virtual environment
+# From repo root
 python -m venv .venv
 source .venv/bin/activate  # On Windows: .venv\Scripts\activate
 
-# Install dependencies
+cd backend
 pip install -r requirements.txt
 
-# Set up Google Cloud credentials
+# Set up Google Cloud credentials (optional if using API key)
 export GOOGLE_CLOUD_PROJECT="your-project-id"
 # OR authenticate with gcloud CLI:
 gcloud auth application-default login

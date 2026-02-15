@@ -1,13 +1,22 @@
+import asyncio
+import mimetypes
+import time as pytime
+from collections import deque
 from fastapi import FastAPI, UploadFile, File, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from pydantic import BaseModel, constr
 from typing import List, Optional
+from datetime import date, time as dt_time, datetime
+from enum import Enum
 import io
 import shutil
 import os
 import tempfile
+import json
+import uuid
+import contextlib
 
 from parsers.pdf_parser import PDFParser
 from parsers.excel_parser import ExcelParser
@@ -22,14 +31,82 @@ app = FastAPI(
     version="0.1.0"
 )
 
+
+# Security and operational limits
+MAX_FILE_SIZE_BYTES = 10 * 1024 * 1024  # 10 MB
+RATE_LIMIT_REQUESTS = 30
+RATE_LIMIT_WINDOW_SECONDS = 60
+AI_PARSE_TIMEOUT_SECONDS = 30
+
+rate_limit_state = {}
+job_store = {}
+job_queue: Optional[asyncio.Queue] = None
+
+
+ALLOWED_TYPES = {
+    ".pdf": ["application/pdf"],
+    ".xlsx": ["application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"],
+    ".xls": ["application/vnd.ms-excel", "application/vnd.ms-office"],
+    ".docx": ["application/vnd.openxmlformats-officedocument.wordprocessingml.document"],
+    ".html": ["text/html", "application/xhtml+xml"],
+    ".htm": ["text/html", "application/xhtml+xml"],
+}
+
+
+def select_parser(file_extension: str):
+    if file_extension == '.pdf':
+        return PDFParser()
+    if file_extension in ['.xlsx', '.xls']:
+        return ExcelParser()
+    if file_extension == '.docx':
+        return DocxParser()
+    if file_extension in ['.html', '.htm']:
+        return HTMLParser()
+    return None
+
+
+async def save_upload_to_temp(file: UploadFile) -> tuple[str, str]:
+    """Save upload to a temp file with size and MIME checks. Returns (path, ext)."""
+    if not file.filename:
+        raise HTTPException(status_code=400, detail="No filename provided")
+
+    ext = os.path.splitext(file.filename)[1].lower()
+    if ext not in ALLOWED_TYPES:
+        raise HTTPException(status_code=400, detail="Unsupported file extension")
+    allowed_mimes = ALLOWED_TYPES[ext]
+    provided = file.content_type or ""
+    guessed, _ = mimetypes.guess_type(file.filename)
+    if provided and provided not in allowed_mimes:
+        raise HTTPException(status_code=400, detail=f"Unsupported MIME type: {provided}")
+    if guessed and guessed not in allowed_mimes:
+        raise HTTPException(status_code=400, detail=f"MIME type mismatch for extension {ext}")
+
+    with tempfile.NamedTemporaryFile(delete=False, suffix=ext) as tmp:
+        bytes_written = 0
+        chunk_size = 1024 * 1024
+        while True:
+            chunk = await file.read(chunk_size)
+            if not chunk:
+                break
+            bytes_written += len(chunk)
+            if bytes_written > MAX_FILE_SIZE_BYTES:
+                tmp_name = tmp.name
+                tmp.close()
+                os.remove(tmp_name)
+                raise HTTPException(status_code=400, detail="File too large (max 10 MB)")
+            tmp.write(chunk)
+        tmp_path = tmp.name
+
+    return tmp_path, ext
+
 @app.exception_handler(RequestValidationError)
 async def validation_exception_handler(request: Request, exc: RequestValidationError):
-    """Handle validation errors with detailed information."""
+    """Handle validation errors with detailed information and return 400."""
     if config.DEBUG:
         print(f"Validation Error: {exc.errors()}")
         print(f"Body: {await request.body()}")
     return JSONResponse(
-        status_code=422,
+        status_code=400,
         content={"detail": exc.errors(), "body": str(exc.body)},
     )
 
@@ -44,82 +121,54 @@ app.add_middleware(
 
 
 @app.post("/upload")
-async def upload_file(file: UploadFile = File(...)):
-    """
-    Upload and parse a syllabus file to extract events.
-    
-    Supports multiple file formats:
-    - PDF (.pdf)
-    - Excel (.xlsx, .xls)
-    - Word (.docx)
-    - HTML (.html, .htm)
-    
-    Args:
-        file: The syllabus file
-        
-    Returns:
-        JSON object with extracted events list, each containing:
-        - module: Course/module name
-        - title: Event title
-        - date: Event date (YYYY-MM-DD)
-        - type: Event type (lecture, assignment, exam, etc.)
-        - description: Additional details
-        
-    Raises:
-        HTTPException 400: Unsupported file format or no filename
-        HTTPException 500: Processing error or Google Cloud configuration issue
-    """
-    # Validate file extension
-    if not file.filename:
-        raise HTTPException(status_code=400, detail="No filename provided")
-    
-    # Create a temporary file to save the upload
-    file_extension = os.path.splitext(file.filename)[1].lower()
-    
-    with tempfile.NamedTemporaryFile(delete=False, suffix=file_extension) as tmp:
-        shutil.copyfileobj(file.file, tmp)
-        tmp_path = tmp.name
+async def upload_file(request: Request, file: UploadFile = File(...)):
+    """Upload and parse a syllabus file to extract events with safety limits."""
+    # Rate limit per client IP (best-effort, in-memory)
+    ip = request.client.host if request.client else "anonymous"
+    now = pytime.time()
+    q = rate_limit_state.setdefault(ip, deque())
+    while q and now - q[0] > RATE_LIMIT_WINDOW_SECONDS:
+        q.popleft()
+    if len(q) >= RATE_LIMIT_REQUESTS:
+        raise HTTPException(status_code=429, detail="Too many requests, slow down.")
+    q.append(now)
 
+    tmp_path = None
+    file_extension = None
     try:
+        tmp_path, file_extension = await save_upload_to_temp(file)
         events = []
-        
-        # Route to appropriate parser based on file extension
-        try:
-            parser = None
-            if file_extension == '.pdf':
-                parser = PDFParser()
-                events = parser.parse(tmp_path)
-            elif file_extension in ['.xlsx', '.xls']:
-                parser = ExcelParser()
-                events = parser.parse(tmp_path)
-            elif file_extension == '.docx':
-                parser = DocxParser()
-                events = parser.parse(tmp_path)
-            elif file_extension in ['.html', '.htm']:
-                parser = HTMLParser()
-                events = parser.parse(tmp_path)
-            else:
-                supported_formats = ['.pdf', '.xlsx', '.xls', '.docx', '.html', '.htm']
-                raise HTTPException(
-                    status_code=400, 
-                    detail=f"Unsupported file format: {file_extension}. Supported formats: {', '.join(supported_formats)}"
-                )
-            
-            source = parser.source if parser else "Unknown"
-        except RuntimeError as e:
-            # Configuration/setup error (e.g., Vertex AI)
+        parser = None
+        parser = select_parser(file_extension)
+        if not parser:
+            supported_formats = ['.pdf', '.xlsx', '.xls', '.docx', '.html', '.htm']
             raise HTTPException(
-                status_code=500, 
+                status_code=400,
+                detail=f"Unsupported file format: {file_extension}. Supported formats: {', '.join(supported_formats)}"
+            )
+
+        try:
+            # Run parser in a thread with timeout to avoid hanging AI calls
+            events = await asyncio.wait_for(
+                asyncio.to_thread(parser.parse, tmp_path),
+                timeout=AI_PARSE_TIMEOUT_SECONDS,
+            )
+        except asyncio.TimeoutError:
+            raise HTTPException(status_code=504, detail="Parsing timed out. Please try a smaller file.")
+        except RuntimeError as e:
+            raise HTTPException(
+                status_code=500,
                 detail=f"Google Cloud configuration error: {str(e)}"
             )
-        
+
+        source = parser.source if parser else "Unknown"
+
         if config.DEBUG:
             print(f"Extracted {len(events)} events from {file.filename} using {source}")
-            
-        return {"events": events, "extraction_source": source}
         
+        return {"events": events, "extraction_source": source}
+
     except HTTPException:
-        # Re-raise HTTP exceptions
         raise
     except Exception as e:
         if config.DEBUG:
@@ -130,72 +179,272 @@ async def upload_file(file: UploadFile = File(...)):
             detail=f"Error processing file: {str(e)}"
         )
     finally:
-        # Clean up temporary file
-        if config.TEMP_FILE_CLEANUP and os.path.exists(tmp_path):
+        if tmp_path and config.TEMP_FILE_CLEANUP and os.path.exists(tmp_path):
             os.remove(tmp_path)
             if config.DEBUG:
                 print(f"Cleaned up temporary file: {tmp_path}")
 
 
+@app.post("/upload/async")
+async def upload_file_async(request: Request, file: UploadFile = File(...)):
+    """Enqueue a syllabus upload for background parsing with streaming updates."""
 
-class EventModel(BaseModel):
-    """Model for an event to be converted to ICS format."""
-    title: Optional[str] = "Untitled"
-    date: Optional[str] = None
-    type: Optional[str] = "event"
-    description: Optional[str] = ""
+    global job_queue, job_store
 
-@app.post("/generate-ics")
-async def generate_ics(request: Request):
-    """
-    Generate an ICS calendar file from a list of events.
-    
-    Args:
-        request: JSON request body containing list of events
-        
-    Returns:
-        JSON object with ics_content as a string
-        
-    Raises:
-        HTTPException 400: Invalid JSON or empty events list
-        HTTPException 500: ICS generation error
-    """
+    # Rate limit per client IP (best-effort, in-memory)
+    ip = request.client.host if request.client else "anonymous"
+    now = pytime.time()
+    q = rate_limit_state.setdefault(ip, deque())
+    while q and now - q[0] > RATE_LIMIT_WINDOW_SECONDS:
+        q.popleft()
+    if len(q) >= RATE_LIMIT_REQUESTS:
+        raise HTTPException(status_code=429, detail="Too many requests, slow down.")
+    q.append(now)
+
+    if job_queue is None:
+        raise HTTPException(status_code=503, detail="Background worker not ready")
+
+    tmp_path = None
+    file_extension = None
+    enqueued = False
     try:
-        events = await request.json()
-    except Exception as e:
-        raise HTTPException(
-            status_code=400, 
-            detail=f"Invalid JSON in request body: {str(e)}"
-        )
-    
-    if not events or not isinstance(events, list):
-        raise HTTPException(
-            status_code=400,
-            detail="Request body must be a non-empty list of events"
-        )
-    
-    try:
-        generator = ICSGenerator()
-        ics_content = generator.generate(events)
-        
-        if config.DEBUG:
-            print(f"Generated ICS file with {len(events)} events")
-        
-        return Response(
-            content=ics_content,
-            media_type="text/calendar",
-            headers={
-                "Content-Disposition": "attachment; filename=syllabus-events.ics"
-            }
-        )
+        tmp_path, file_extension = await save_upload_to_temp(file)
+        parser = select_parser(file_extension)
+        if not parser:
+            supported_formats = ['.pdf', '.xlsx', '.xls', '.docx', '.html', '.htm']
+            raise HTTPException(
+                status_code=400,
+                detail=f"Unsupported file format: {file_extension}. Supported formats: {', '.join(supported_formats)}"
+            )
+
+        job_id = str(uuid.uuid4())
+        job_store[job_id] = {
+            "status": "queued",
+            "filename": file.filename,
+            "events": [],
+            "error": None,
+            "source": None,
+            "progress": "queued",
+            "created_at": pytime.time(),
+            "started_at": None,
+            "finished_at": None,
+            "parser": parser.__class__.__name__,
+            "tmp_path": tmp_path,
+            "ext": file_extension,
+            "ip": ip,
+        }
+
+        await job_queue.put(job_id)
+        enqueued = True
+
+        return {"job_id": job_id, "status": "queued"}
+
+    except HTTPException:
+        raise
     except Exception as e:
         if config.DEBUG:
             import traceback
             traceback.print_exc()
         raise HTTPException(
             status_code=500,
-            detail=f"Error generating ICS file: {str(e)}"
+            detail=f"Error enqueuing file: {str(e)}"
         )
+    finally:
+        if not enqueued and tmp_path and config.TEMP_FILE_CLEANUP and os.path.exists(tmp_path):
+            os.remove(tmp_path)
+            if config.DEBUG:
+                print(f"Cleaned up temporary file: {tmp_path}")
+
+
+
+class EventType(str, Enum):
+    LECTURE = "lecture"
+    ASSIGNMENT = "assignment"
+    EXAM = "exam"
+    PROJECT = "project"
+    EVENT = "event"
+
+
+class EventIn(BaseModel):
+    """Validated event payload for ICS generation."""
+
+    title: constr(strip_whitespace=True, min_length=1)
+    date: date
+    time: dt_time
+    type: EventType
+    description: Optional[str] = ""
+    module: Optional[str] = ""
+    reminders: Optional[List[int]] = None
+    job_id: Optional[str] = None
+
+    def to_ics_dict(self) -> dict:
+        dt_combined = datetime.combine(self.date, self.time).isoformat()
+        reminder_list: List[int] = []
+        if self.reminders:
+            # Filter to positive integers only
+            reminder_list = sorted({r for r in self.reminders if isinstance(r, int) and r > 0})
+        return {
+            "title": self.title,
+            "date": dt_combined,
+            "type": self.type.value,
+            "description": self.description or "",
+            "module": self.module or "",
+            "reminders": reminder_list,
+            "job_id": self.job_id,
+        }
+
+@app.post("/generate-ics")
+async def generate_ics(events: List[EventIn]):
+    """Generate an ICS calendar file from validated event payloads."""
+    if not events:
+        raise HTTPException(
+            status_code=400,
+            detail="Request body must be a non-empty list of events",
+        )
+
+    try:
+        generator = ICSGenerator()
+        normalized_events = [event.to_ics_dict() for event in events]
+        ics_content = generator.generate(normalized_events)
+
+        if config.DEBUG:
+            print(f"Generated ICS file with {len(normalized_events)} events")
+
+        return Response(
+            content=ics_content,
+            media_type="text/calendar",
+            headers={
+                "Content-Disposition": "attachment; filename=syllabus-events.ics"
+            },
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        if config.DEBUG:
+            import traceback
+            traceback.print_exc()
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error generating ICS file: {str(e)}",
+        )
+
+
+async def process_job(job_id: str):
+    """Background worker logic to parse a queued file."""
+    global job_store
+
+    job = job_store.get(job_id)
+    if not job:
+        return
+
+    job["status"] = "processing"
+    job["progress"] = "parsing"
+    job["started_at"] = pytime.time()
+
+    tmp_path = job.get("tmp_path")
+    file_extension = job.get("ext")
+
+    try:
+        parser = select_parser(file_extension)
+        if not parser:
+            job["status"] = "failed"
+            job["error"] = f"Unsupported file format: {file_extension}"
+            return
+
+        try:
+            job["progress"] = "extracting"
+            events = await asyncio.wait_for(
+                asyncio.to_thread(parser.parse, tmp_path),
+                timeout=AI_PARSE_TIMEOUT_SECONDS,
+            )
+        except asyncio.TimeoutError:
+            job["status"] = "failed"
+            job["error"] = "Parsing timed out. Please try a smaller file."
+            return
+        except RuntimeError as e:
+            job["status"] = "failed"
+            job["error"] = f"Google Cloud configuration error: {str(e)}"
+            return
+
+        job["events"] = events
+        job["source"] = parser.source
+        job["status"] = "completed"
+        job["progress"] = "completed"
+        job["finished_at"] = pytime.time()
+
+    except Exception as e:
+        job["status"] = "failed"
+        job["error"] = str(e)
+        if config.DEBUG:
+            import traceback
+            traceback.print_exc()
+    finally:
+        if tmp_path and config.TEMP_FILE_CLEANUP and os.path.exists(tmp_path):
+            os.remove(tmp_path)
+            if config.DEBUG:
+                print(f"Cleaned up temporary file: {tmp_path}")
+
+
+async def job_worker():
+    """Continuously process queued jobs in the background."""
+    global job_queue
+    while True:
+        job_id = await job_queue.get()
+        await process_job(job_id)
+        job_queue.task_done()
+
+
+@app.on_event("startup")
+async def startup_worker():
+    global job_queue
+    job_queue = asyncio.Queue()
+    app.state.worker_task = asyncio.create_task(job_worker())
+
+
+@app.on_event("shutdown")
+async def shutdown_worker():
+    task = getattr(app.state, "worker_task", None)
+    if task:
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+
+
+@app.get("/upload/stream/{job_id}")
+async def stream_job(job_id: str):
+    """Server-Sent Events stream for job progress and results."""
+
+    if job_id not in job_store:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    async def event_generator():
+        last_status = None
+        while True:
+            job = job_store.get(job_id)
+            if not job:
+                break
+            payload = {
+                "job_id": job_id,
+                "status": job.get("status"),
+                "progress": job.get("progress"),
+                "events": job.get("events") if job.get("status") == "completed" else None,
+                "error": job.get("error"),
+                "source": job.get("source"),
+                "filename": job.get("filename"),
+            }
+            payload_str = json.dumps(payload)
+            if payload_str != last_status:
+                yield f"data: {payload_str}\n\n"
+                last_status = payload_str
+            if job.get("status") in ["completed", "failed"]:
+                break
+            await asyncio.sleep(0.5)
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache"},
+    )
 
 
 

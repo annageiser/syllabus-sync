@@ -1,5 +1,5 @@
-import React, { useState } from 'react';
-import { Trash2, Calendar as CalendarIcon, Tag, FileText, Info } from 'lucide-react';
+import React from 'react';
+import { Trash2, Calendar as CalendarIcon, Tag, FileText, Info, Bell } from 'lucide-react';
 
 interface Event {
     title: string;
@@ -7,6 +7,7 @@ interface Event {
     type: string;
     description?: string;
     module?: string;
+    reminders?: number[];
 }
 
 interface EventTableProps {
@@ -24,6 +25,15 @@ const EventTable: React.FC<EventTableProps> = ({ events, onUpdate, onDelete }) =
         { value: 'exam', label: 'Exam' },
         { value: 'project', label: 'Project' },
         { value: 'event', label: 'Other' },
+    ];
+
+    const reminderOptions = [
+        { value: 10, label: '10m' },
+        { value: 60, label: '1h' },
+        { value: 180, label: '3h' },
+        { value: 1440, label: '1d' },
+        { value: 4320, label: '3d' },
+        { value: 10080, label: '1w' },
     ];
 
     return (
@@ -100,7 +110,41 @@ const EventTable: React.FC<EventTableProps> = ({ events, onUpdate, onDelete }) =
                             />
                         </div>
 
-                        <div className="col-span-1 flex justify-end">
+                        <div className="col-span-12 mt-3">
+                            <div className="flex items-center gap-2 text-[10px] font-black uppercase tracking-[0.2em] text-slate-500">
+                                <Bell size={12} /> Reminders
+                                <span className="text-[11px] font-medium normal-case tracking-normal text-slate-400">Pick one or more times.</span>
+                            </div>
+                            <div className="flex flex-wrap gap-2 mt-2">
+                                {reminderOptions.map(opt => {
+                                    const reminders = event.reminders || [];
+                                    const active = reminders.includes(opt.value);
+                                    return (
+                                        <button
+                                            key={opt.value}
+                                            type="button"
+                                            onClick={() => {
+                                                const current = new Set(reminders);
+                                                if (active) {
+                                                    current.delete(opt.value);
+                                                } else {
+                                                    current.add(opt.value);
+                                                }
+                                                onUpdate(index, { ...event, reminders: Array.from(current).sort((a, b) => a - b) });
+                                            }}
+                                            className={`px-3 py-1 rounded-full border text-xs font-bold transition-all ${active ? 'bg-indigo-600 text-white border-indigo-500 shadow-lg shadow-indigo-500/30' : 'bg-white/5 text-slate-400 border-slate-500/30 hover:border-indigo-400/60 hover:text-indigo-400'}`}
+                                        >
+                                            {opt.label} before
+                                        </button>
+                                    );
+                                })}
+                                {(!event.reminders || event.reminders.length === 0) && (
+                                    <span className="text-xs text-slate-400 italic">No reminders set</span>
+                                )}
+                            </div>
+                        </div>
+
+                        <div className="col-span-12 md:col-span-1 flex justify-end mt-4 md:mt-0">
                             <button
                                 id={`delete-event-${index}`}
                                 onClick={() => onDelete(index)}

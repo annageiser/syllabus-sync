@@ -10,6 +10,9 @@ import json
 from datetime import datetime, timedelta
 import re
 import os
+import hashlib
+import time
+import copy
 from config import config
 
 # Support both Vertex AI and Google AI SDK
@@ -67,6 +70,10 @@ class BaseParser:
             self.source = "Local Heuristic (Offline)"
         
         self.current_year = config.DEFAULT_YEAR
+        # Simple in-memory cache for AI responses keyed by normalized text content
+        self.cache_ttl_seconds = 900  # 15 minutes
+        if not hasattr(self.__class__, "_ai_cache"):
+            self.__class__._ai_cache = {}
     
     def convert_calendar_week_to_date(self, week_num: int, year: int = None) -> str:
         """
@@ -118,268 +125,274 @@ class BaseParser:
         Raises:
             Exception: If AI processing fails
         """
+        normalized_text = text_content.strip()
+
         prompt = f"""
 Analyze the uploaded academic syllabus or course schedule document and extract ALL events, deadlines, assignments, exams, lectures, and important dates.
 
 **EXTRACT THE FOLLOWING FIELDS FOR EACH EVENT:**
 
-1. **module**: The course name, module name, or course code (e.g., "CS101", "Mathematics", "Introduction to AI", "BIT BC1", "Statistics and Probability"). This is usually at the top of document or in headers. If multiple modules are in one document, extract the module for each specific event.
-
-2. **title**: The name of the specific event, assignment, lecture, exam, or homework (e.g., "Midterm Exam", "Homework 3", "Lecture on Recursion", "Project Submission")
-
-3. **date** OR **calendar_week**: Extract the date information in one of these formats:
-   - If a specific date is given: Use YYYY-MM-DD format
-   - If a calendar week is given (CW, KW, Week, Woche, Semaine, Settimana, etc.), extract the week number
-   - If only a month/day is given without a year, assume year {self.current_year}
-   
-   **MULTILINGUAL DATE KEYWORDS TO RECOGNIZE:**
-   - English: Date, Week, Calendar Week, CW
-   - German: Datum, Woche, Kalenderwoche, KW
-   - French: Date, Semaine, Semaine calendaire, SC
-   - Italian: Data, Settimana, Settimana di calendario
-   - Spanish: Fecha, Semana
-
-4. **type**: Classify the event as one of the following:
-   - "lecture" - Class sessions, lessons, seminars
-   - "assignment" - Homework, assignments, exercises to complete
-   - "exam" - Exams, tests, quizzes, assessments
-   - "test" - Same as exam (will be normalized)
-   - "homework" - Same as assignment (will be normalized)
-   - "project" - Projects, presentations, group work submissions
-   - "event" - Other events (office hours, reviews, etc.)
-
-5. **description**: Optional. Any additional notes, topics covered, chapters, weighting percentage, or other relevant information.
+1. **module**: Course/module name or code (e.g., "CS101").
+2. **title**: Event title (lecture name, assignment, exam, project, etc.).
+3. **date** OR **calendar_week**: Use YYYY-MM-DD for exact dates. If only week numbers (CW/KW/Week/Woche/etc.), return "calendar_week".
+4. **start_time** and optional **end_time**: 24h HH:MM. If only one time is present, set it as start_time.
+5. **location**: Room/building/URL if present.
+6. **type**: lecture, assignment, exam, project, event (normalize "test"→exam, "homework"→assignment).
+7. **recurrence**: For repeating sessions (e.g., weekly lectures), return {{"freq": "weekly", "count": N}} where N is occurrences if known.
+8. **priority**: 1-9 (1 highest). Use 1 for exams, 3 for projects, 5 for assignments, 9 for lectures/events unless weighting hints higher stakes.
+9. **description**: Topics, chapters, notes.
 
 **OUTPUT FORMAT:**
-
-Return ONLY valid JSON (no markdown formatting, no ```json blocks):
-
+Return ONLY valid JSON (no markdown):
 [
-  {{
-    "module": "CS101",
-    "title": "Midterm Exam",
-    "date": "2026-03-15",
-    "type": "exam",
-    "description": "Chapters 1-5, 30% of final grade"
-  }},
-  {{
-    "module": "Mathematics",
-    "title": "Homework 3",
-    "calendar_week": 12,
-    "type": "assignment",
-    "description": "Linear algebra problems"
-  }},
-  {{
-    "module": "BIT BC1",
-    "title": "Lecture: Introduction to Databases",
-    "date": "2026-02-18",
-    "type": "lecture",
-    "description": "SQL basics, relational model"
-  }}
+    {{
+        "module": "CS101",
+        "title": "Midterm Exam",
+        "date": "2026-03-15",
+        "start_time": "10:00",
+        "type": "exam",
+        "priority": 1,
+        "location": "Room 201",
+        "description": "Ch 1-5",
+        "recurrence": null
+    }},
+    {{
+        "module": "CS101",
+        "title": "Lecture: Databases",
+        "date": "2026-02-18",
+        "start_time": "14:00",
+        "end_time": "16:00",
+        "type": "lecture",
+        "location": "Zoom",
+        "recurrence": {{"freq": "weekly", "count": 12}}
+    }},
+    {{
+        "module": "CS101",
+        "title": "Homework 3",
+        "calendar_week": 12,
+        "type": "assignment",
+        "priority": 5,
+        "description": "Linear algebra problems"
+    }}
 ]
 
-**IMPORTANT RULES:**
-- Extract ALL events from the document, don't skip any
-- If the module name appears once at the top, use it for all events
-- For calendar weeks (CW/KW), provide the week number in "calendar_week" field
-- For lecture series, extract individual lectures if dates are provided
-- Normalize types: "test" → "exam", "homework" → "assignment"
-- If an event has NO date or calendar week, skip it
-- Return an empty list [] if no events are found
-
-Do not include markdown formatting. Return only the JSON array.
+Rules: extract ALL events; assume year {self.current_year} when missing; skip entries without any date/week; normalize types; prefer structured outputs with times/locations/recurrence when present. Return [] if none.
 """
-        
-    def heuristic_extraction(self, text: str) -> list:
-        """
-        Offline heuristic extraction using regex and keyword matching.
-        This is a free fallback for when AI extraction is unavailable.
-        """
-        events = []
-        lines = text.split('\n')
-        
-        # Try to find module name at the top
-        module_name = ""
-        for i in range(min(10, len(lines))):
-            line = lines[i].strip()
-            if "Module" in line or "Course" in line or "Program:" in line:
-                module_name = line.split(":")[-1].strip()
-                break
-        
-        # Common date patterns
-        # 1. DD Month (e.g., 20 Feb, 27 February)
-        months = r'(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec|January|February|March|April|May|June|July|August|September|October|November|December)'
-        date_pattern = re.compile(rf'(\d{{1,2}})\.?\s+{months}', re.IGNORECASE)
-        
-        # 2. DD.MM. (European format)
-        euro_pattern = re.compile(r'(\d{1,2})\.(\d{1,2})\.')
-        
-        # 3. YYYY-MM-DD
-        iso_pattern = re.compile(r'(\d{4})-(\d{2})-(\d{2})')
 
-        # 4. KW/CW (Calendar Week)
-        week_pattern = re.compile(r'(KW|CW|Week|Woche)\s*(\d{1,2})', re.IGNORECASE)
-
-        for i, line in enumerate(lines):
-            line = line.strip()
-            if not line:
-                continue
-                
-            found_date = None
-            
-            # Check for patterns
-            match = date_pattern.search(line)
-            if match:
-                day = match.group(1)
-                month_str = match.group(2)[:3].capitalize()
-                try:
-                    month_map = {"Jan": 1, "Feb": 2, "Mar": 3, "Apr": 4, "May": 5, "Jun": 6, 
-                                 "Jul": 7, "Aug": 8, "Sep": 9, "Oct": 10, "Nov": 11, "Dec": 12}
-                    month = month_map.get(month_str, 1)
-                    found_date = f"{self.current_year}-{month:02d}-{int(day):02d}"
-                except: pass
-            
-            if not found_date:
-                match = euro_pattern.search(line)
-                if match:
-                    day, month = match.groups()
-                    found_date = f"{self.current_year}-{int(month):02d}-{int(day):02d}"
-            
-            if not found_date:
-                match = iso_pattern.search(line)
-                if match:
-                    found_date = match.group(0)
-            
-            if not found_date:
-                match = week_pattern.search(line)
-                if match:
-                    try:
-                        week_num = int(match.group(2))
-                        found_date = self.convert_calendar_week_to_date(week_num)
-                    except: pass
-
-            if found_date:
-                # Use the rest of the line or the next line as title
-                # Filter out the date/week part from the line
-                title = line
-                for pattern in [date_pattern, euro_pattern, iso_pattern, week_pattern]:
-                    title = pattern.sub('', title).strip()
-                
-                # If title is too short, look at next line
-                if len(title) < 5 and i + 1 < len(lines):
-                    title = f"{title} {lines[i+1].strip()}".strip()
-                
-                # Determine type
-                event_type = "lecture"
-                if any(k in title.lower() for k in ["exam", "test", "klausur", "quiz"]):
-                    event_type = "exam"
-                elif any(k in title.lower() for k in ["assignment", "due", "moodle", "submission", "homework"]):
-                    event_type = "assignment"
-                elif any(k in title.lower() for k in ["project", "presentation"]):
-                    event_type = "project"
-                
-                events.append({
-                    "module": module_name,
-                    "title": title[:100],
-                    "date": found_date,
-                    "type": event_type,
-                    "description": line
-                })
-
-        return events
-
-    def extract_events_with_ai(self, text_content: str) -> list:
-        """
-        Extract events from text content using Vertex AI or Google AI.
-        Falls back to heuristic extraction if AI fails or is not configured.
-        
-        Returns:
-            List of event dictionaries.
-        """
-        # Fallback if no AI model is configured
+        # If no AI model is configured, fall back immediately
         if not self.model:
             if config.DEBUG:
                 print("No AI model configured, using heuristic extraction")
             self.source = "Local Heuristic (Offline)"
             return self.heuristic_extraction(text_content)
 
-        prompt = f"""
-Analyze the document and extract ALL events (assignments, exams, lectures).
-Return ONLY a JSON array:
-[
-  {{
-    "module": "CS101",
-    "title": "Midterm Exam",
-    "date": "2026-03-15",
-    "type": "exam",
-    "description": "..."
-  }}
-]
-Rules:
-- dates: YYYY-MM-DD or use "calendar_week": 12
-- types: lecture, assignment, exam, project, event
-- multilingual support
-"""
-        
+        cache_key = None
+        # Check cache before calling the model
         try:
-            # Combine prompt and content for better compatibility
+            cache_input = normalized_text.encode("utf-8")
+            cache_hash = hashlib.sha256(cache_input).hexdigest()
+            cache_key = (self.source or "local", self.current_year, cache_hash)
+            cached = self._ai_cache.get(cache_key)
+            if cached:
+                ts, cached_events = cached
+                if time.time() - ts < self.cache_ttl_seconds:
+                    return copy.deepcopy(cached_events)
+                else:
+                    # Expired
+                    self._ai_cache.pop(cache_key, None)
+        except Exception:
+            # Cache failures should not block parsing
+            cache_key = None
+
+        try:
             full_prompt = f"{prompt}\n\nDOCKET CONTENT:\n{text_content}"
-            response = self.model.generate_content(full_prompt)
+            generation_config = {
+                "max_output_tokens": 512,
+                "temperature": 0.2,
+            }
+
+            response = self.model.generate_content(
+                full_prompt,
+                generation_config=generation_config,
+            )
             response_text = response.text.strip()
-            
+
             if config.DEBUG:
                 print(f"AI Response (first 100 chars): {response_text[:100]}...")
-            
-            # Clean up markdown
+
+            # Clean up markdown fences if present
             if "```json" in response_text:
                 response_text = response_text.split("```json")[-1].split("```")[0]
             elif "```" in response_text:
                 response_text = response_text.split("```")[-1].split("```")[0]
-            
+
             response_text = response_text.strip()
-            
-            # Parse JSON
+
             try:
                 events = json.loads(response_text)
-                if not isinstance(events, list): 
+                if not isinstance(events, list):
                     self.source = "Local Heuristic (Fallback: Invalid JSON structure)"
                     return self.heuristic_extraction(text_content)
-                
+
                 normalized_events = []
                 for event in events:
-                    if not isinstance(event, dict): continue
-                    
+                    if not isinstance(event, dict):
+                        continue
+
                     normalized_event = {
                         "module": event.get("module", ""),
                         "title": event.get("title", "Untitled"),
                         "type": (event.get("type", "event")).lower(),
-                        "description": event.get("description", "")
+                        "description": event.get("description", ""),
                     }
-                    
+
                     date_str = event.get("date")
                     calendar_week = event.get("calendar_week")
-                    
+
                     if date_str:
                         normalized_event["date"] = date_str
                     elif calendar_week:
                         try:
                             normalized_event["date"] = self.convert_calendar_week_to_date(int(calendar_week))
-                        except: continue
-                    else: continue
-                    
+                        except Exception:
+                            continue
+                    else:
+                        continue
+
+                    # Optional structured fields
+                    if event.get("start_time"):
+                        normalized_event["start_time"] = event.get("start_time")
+                    elif event.get("time"):
+                        normalized_event["start_time"] = event.get("time")
+                    if event.get("end_time"):
+                        normalized_event["end_time"] = event.get("end_time")
+                    if event.get("location"):
+                        normalized_event["location"] = event.get("location")
+                    if event.get("priority"):
+                        normalized_event["priority"] = event.get("priority")
+                    if event.get("recurrence"):
+                        normalized_event["recurrence"] = event.get("recurrence")
+
                     normalized_events.append(normalized_event)
-                
-                # self.source is already set in __init__ for the AI case
+
+                # Store successful result in cache
+                if cache_key:
+                    try:
+                        self._ai_cache[cache_key] = (time.time(), copy.deepcopy(normalized_events))
+                        # Simple eviction to keep cache bounded
+                        if len(self._ai_cache) > 256:
+                            oldest_key = min(self._ai_cache.items(), key=lambda kv: kv[1][0])[0]
+                            self._ai_cache.pop(oldest_key, None)
+                    except Exception:
+                        pass
+
                 return normalized_events
-                
+
             except json.JSONDecodeError:
-                if config.DEBUG: print("JSON Decode Error, falling back to heuristic")
+                if config.DEBUG:
+                    print("JSON Decode Error, falling back to heuristic")
                 self.source = "Local Heuristic (Fallback: JSON Parse Error)"
                 return self.heuristic_extraction(text_content)
-                
+
         except Exception as e:
             if config.DEBUG:
                 print(f"AI Extraction failed: {e}")
                 print("Falling back to HEURISTIC OFFLINE EXTRACTION")
             self.source = f"Local Heuristic (Fallback: AI Error - {str(e)})"
             return self.heuristic_extraction(text_content)
+        
+    def heuristic_extraction(self, text: str) -> list:
+        """Offline heuristic extraction using regex and keyword matching."""
+        events = []
+        lines = text.split('\n')
+
+        module_name = ""
+        for i in range(min(10, len(lines))):
+            line = lines[i].strip()
+            if "Module" in line or "Course" in line or "Program:" in line:
+                module_name = line.split(":")[-1].strip()
+                break
+
+        months = r'(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec|January|February|March|April|May|June|July|August|September|October|November|December)'
+        date_pattern = re.compile(rf'(\d{{1,2}})\.?\s+{months}', re.IGNORECASE)
+        euro_pattern = re.compile(r'(\d{1,2})\.(\d{1,2})\.')
+        iso_pattern = re.compile(r'(\d{4})-(\d{2})-(\d{2})')
+        week_pattern = re.compile(r'(KW|CW|Week|Woche)\s*(\d{1,2})', re.IGNORECASE)
+        time_pattern = re.compile(r'(\d{1,2}:\d{2})')
+
+        for i, line in enumerate(lines):
+            line = line.strip()
+            if not line:
+                continue
+
+            found_date = None
+            match = date_pattern.search(line)
+            if match:
+                day = match.group(1)
+                month_str = match.group(2)[:3].capitalize()
+                try:
+                    month_map = {"Jan": 1, "Feb": 2, "Mar": 3, "Apr": 4, "May": 5, "Jun": 6,
+                                 "Jul": 7, "Aug": 8, "Sep": 9, "Oct": 10, "Nov": 11, "Dec": 12}
+                    month = month_map.get(month_str, 1)
+                    found_date = f"{self.current_year}-{month:02d}-{int(day):02d}"
+                except Exception:
+                    pass
+
+            if not found_date:
+                match = euro_pattern.search(line)
+                if match:
+                    day, month = match.groups()
+                    found_date = f"{self.current_year}-{int(month):02d}-{int(day):02d}"
+
+            if not found_date:
+                match = iso_pattern.search(line)
+                if match:
+                    found_date = match.group(0)
+
+            if not found_date:
+                match = week_pattern.search(line)
+                if match:
+                    try:
+                        week_num = int(match.group(2))
+                        found_date = self.convert_calendar_week_to_date(week_num)
+                    except Exception:
+                        pass
+
+            if found_date:
+                title = line
+                for pattern in [date_pattern, euro_pattern, iso_pattern, week_pattern]:
+                    title = pattern.sub('', title).strip()
+
+                if len(title) < 5 and i + 1 < len(lines):
+                    title = f"{title} {lines[i+1].strip()}".strip()
+
+                event_type = "lecture"
+                lower_title = title.lower()
+                if any(k in lower_title for k in ["exam", "test", "klausur", "quiz"]):
+                    event_type = "exam"
+                elif any(k in lower_title for k in ["assignment", "due", "moodle", "submission", "homework"]):
+                    event_type = "assignment"
+                elif any(k in lower_title for k in ["project", "presentation"]):
+                    event_type = "project"
+
+                start_time = None
+                match_time = time_pattern.search(line)
+                if match_time:
+                    start_time = match_time.group(1)
+
+                location = None
+                if any(k in lower_title for k in ["room", "hall", "building", "auditorium", "lab"]):
+                    location = title
+
+                events.append({
+                    "module": module_name,
+                    "title": title[:100],
+                    "date": found_date,
+                    "start_time": start_time,
+                    "location": location,
+                    "type": event_type,
+                    "description": line
+                })
+
+        return events
+
