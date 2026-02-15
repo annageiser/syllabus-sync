@@ -177,6 +177,47 @@ class BaseParser:
                 return events, label
 
         return None, attempts
+
+    def _normalize_whitespace(self, text: str) -> str:
+        return re.sub(r"\s+", " ", (text or "").replace("\r", " ").replace("\n", " ")).strip()
+
+    def _clean_description(self, description: str) -> str:
+        cleaned = self._normalize_whitespace(description)
+        cleaned = re.sub(r"^[\-\*]\s*", "", cleaned)
+        return cleaned.strip(" -")
+
+    def _title_from_description(self, description: str) -> str:
+        snippet = self._clean_description(description)
+        parts = re.split(r"[\.\n;]\s*", snippet)
+        candidate = parts[0] if parts else snippet
+        candidate = re.sub(r"^(week|lecture|class|session)\s*\d*[:\-]?\s*", "", candidate, flags=re.IGNORECASE)
+        return candidate[:90].strip(" -:") or snippet[:90]
+
+    def _clean_title(self, title: str, description: str | None = None) -> str:
+        cleaned = self._normalize_whitespace(title)
+        cleaned = re.sub(r"^[\-\*]\s*", "", cleaned)
+        cleaned = re.sub(r"^(week|lecture|class|session)\s*\d*[:\-]?\s*", "", cleaned, flags=re.IGNORECASE)
+        cleaned = re.sub(r"^\d+[\.:\)]\s*", "", cleaned)
+        cleaned = cleaned.strip(" -:;")
+
+        generic_titles = {"lecture", "class", "session", "event"}
+        if (not cleaned or cleaned.lower() in generic_titles) and description:
+            cleaned = self._title_from_description(description)
+
+        if len(cleaned) > 90:
+            cleaned = cleaned[:90].rstrip(" ,;:") + "..."
+
+        if not cleaned and description:
+            cleaned = self._title_from_description(description)
+
+        return cleaned or "Untitled"
+
+    def _clean_event_fields(self, event: dict) -> dict:
+        event = dict(event)
+        event["title"] = self._clean_title(event.get("title", ""), event.get("description"))
+        if event.get("description"):
+            event["description"] = self._clean_description(event["description"])
+        return event
     
     def extract_events_with_ai(self, text_content: str) -> list:
         """
@@ -212,7 +253,7 @@ Analyze the uploaded academic syllabus or course schedule document and extract A
 
 Schema (array of objects):
 - module: string
-- title: string
+- title: concise summary of the event topic (avoid generic words like "Lecture" or "Class")
 - date: string (YYYY-MM-DD) OR use calendar_week: number when only week present
 - calendar_week: number (optional, when exact date missing)
 - start_time: string (HH:MM, 24h, optional)
@@ -221,13 +262,21 @@ Schema (array of objects):
 - type: string (lecture|assignment|exam|project|event)
 - recurrence: object (optional) with keys freq ("weekly"|"monthly"|"daily"), count (number, optional), until (YYYYMMDD, optional)
 - priority: number 1-9 (optional)
-- description: string (optional)
+- description: full notes/context (readings, deliverables, instructions, room notes)
 
 Rules:
+- Title must summarize the specific topic (e.g., "Lecture 5 - Neural Networks: Backprop"), not just "Lecture" or "Class".
+- Notes/description should keep all relevant details (what to submit, readings, room, due time) in plain text.
 - Assume year {self.current_year} when missing.
 - Skip items without any date/week.
 - Normalize types (test→exam, homework→assignment).
 - Output ONLY the JSON array. No prose, no code fences, no markdown.
+
+Examples of good titles:
+- Assignment: "Assignment 1 - Data Cleaning (due 23:59)"
+- Exam: "Midterm - Probability and Markov Chains"
+- Lecture: "Lecture 7 - Regression Diagnostics"
+- Group work: "Team workshop - Prototype demo and feedback"
 """
 
         # If no AI model is configured, fall back immediately
@@ -341,7 +390,7 @@ Rules:
                 if event.get("recurrence"):
                     normalized_event["recurrence"] = event.get("recurrence")
 
-                normalized_events.append(normalized_event)
+                normalized_events.append(self._clean_event_fields(normalized_event))
 
             # Store successful result in cache
             if cache_key:
@@ -452,15 +501,23 @@ Rules:
                 if any(k in lower_title for k in ["room", "hall", "building", "auditorium", "lab"]):
                     location = title
 
-                events.append({
+                description_lines = [line]
+                if i + 1 < len(lines):
+                    next_line = lines[i+1].strip()
+                    if next_line and not any(p.search(next_line) for p in [date_pattern, euro_pattern, iso_pattern, week_pattern]):
+                        description_lines.append(next_line)
+
+                event = {
                     "module": module_name,
                     "title": title[:100],
                     "date": found_date,
                     "start_time": start_time,
                     "location": location,
                     "type": event_type,
-                    "description": line
-                })
+                    "description": " ".join(description_lines)
+                }
+
+                events.append(self._clean_event_fields(event))
 
         return events
 

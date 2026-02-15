@@ -215,3 +215,73 @@ def test_base_parser_handles_markdown_fence(monkeypatch):
     assert events[0]["type"] == "exam"
     assert events[0]["location"] == "Room 12"
     assert events[0]["start_time"] == "10:00"
+
+
+def test_ai_rewrites_generic_title_from_description(monkeypatch):
+    class GenericModel:
+        def generate_content(self, prompt, generation_config=None):
+            return SimpleNamespace(
+                text='[{"title": "Lecture", "date": "2026-04-12", "type": "lecture", "description": "Week 3: Linear Regression basics and labs"}]'
+            )
+
+    def fake_init(self):
+        self.model = GenericModel()
+        self.source = "Test AI"
+        self.api_key = "dummy"
+        self.use_vertex = False
+        self.current_year = config.DEFAULT_YEAR
+        self.cache_ttl_seconds = 900
+        self._ai_cache = {}
+        self.processing_mode = "ai"
+        self.fallback_reason = None
+        self.last_raw_response = None
+        self.last_prompt = None
+
+    monkeypatch.setattr(BaseParser, "__init__", fake_init)
+
+    parser = BaseParser()
+    events = parser.extract_events_with_ai("Linear regression week")
+
+    assert events[0]["title"] == "Linear Regression basics and labs"
+    assert events[0]["description"] == "Week 3: Linear Regression basics and labs"
+
+
+def test_ai_truncates_long_title_and_merges_notes(monkeypatch):
+    class LongModel:
+        def generate_content(self, prompt, generation_config=None):
+            return SimpleNamespace(
+                text='[{"title": "This is an extremely verbose lecture heading that should be shortened to stay readable for students and calendars", "date": "2026-05-01", "type": "lecture", "description": "Project kickoff\\nTeams formed; read syllabus"}]'
+            )
+
+    def fake_init(self):
+        self.model = LongModel()
+        self.source = "Test AI"
+        self.api_key = "dummy"
+        self.use_vertex = False
+        self.current_year = config.DEFAULT_YEAR
+        self.cache_ttl_seconds = 900
+        self._ai_cache = {}
+        self.processing_mode = "ai"
+        self.fallback_reason = None
+        self.last_raw_response = None
+        self.last_prompt = None
+
+    monkeypatch.setattr(BaseParser, "__init__", fake_init)
+
+    parser = BaseParser()
+    events = parser.extract_events_with_ai("Project kickoff")
+
+    assert len(events[0]["title"]) <= 93
+    assert "..." in events[0]["title"]
+    assert events[0]["description"] == "Project kickoff Teams formed; read syllabus"
+
+
+def test_heuristic_real_syllabus_text_cleaned():
+    parser = BaseParser()
+    parser.model = None  # Force heuristic
+
+    text = "2026-10-12 Week 5: Guest lecture - Ethics in AI\nAssigned reading: Floridi chapter 3"
+    events = parser.extract_events_with_ai(text)
+
+    assert events[0]["title"] == "Guest lecture - Ethics in AI"
+    assert "Assigned reading" in events[0]["description"]
