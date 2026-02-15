@@ -90,3 +90,128 @@ def test_base_parser_fallback_without_ai():
     assert len(events) == 1
     assert events[0]["date"] == expected_date
     assert events[0]["type"] == "project"
+
+
+def test_base_parser_prefers_ai_when_model_available(monkeypatch):
+    calls = []
+
+    class FakeModel:
+        def generate_content(self, prompt, generation_config=None):
+            calls.append({"prompt": prompt, "config": generation_config})
+            return SimpleNamespace(text='[{"title": "AI Event", "date": "2026-01-02", "type": "exam"}]')
+
+    def fake_init(self):
+        self.model = FakeModel()
+        self.source = "Test AI"
+        self.api_key = "dummy"
+        self.use_vertex = False
+        self.current_year = config.DEFAULT_YEAR
+        self.cache_ttl_seconds = 900
+        self._ai_cache = {}
+        self.processing_mode = "ai"
+        self.fallback_reason = None
+        self.last_raw_response = None
+        self.last_prompt = None
+
+    monkeypatch.setattr(BaseParser, "__init__", fake_init)
+
+    parser = BaseParser()
+    events = parser.extract_events_with_ai("Exam on 2026-01-02")
+
+    assert calls, "AI model should have been called"
+    assert parser.processing_mode == "ai"
+    assert parser.fallback_reason is None
+    assert len(events) == 1
+    assert events[0]["type"] == "exam"
+
+
+def test_base_parser_falls_back_on_bad_json(monkeypatch):
+    class BadModel:
+        def generate_content(self, prompt, generation_config=None):
+            return SimpleNamespace(text='not json at all')
+
+    def fake_init(self):
+        self.model = BadModel()
+        self.source = "Test AI"
+        self.api_key = "dummy"
+        self.use_vertex = False
+        self.current_year = config.DEFAULT_YEAR
+        self.cache_ttl_seconds = 900
+        self._ai_cache = {}
+        self.processing_mode = "ai"
+        self.fallback_reason = None
+        self.last_raw_response = None
+        self.last_prompt = None
+
+    monkeypatch.setattr(BaseParser, "__init__", fake_init)
+
+    parser = BaseParser()
+    events = parser.extract_events_with_ai("Project kickoff - KW 12")
+
+    assert parser.processing_mode == "heuristic"
+    assert parser.fallback_reason == "json_parse_error"
+    assert len(events) >= 1
+
+
+def test_base_parser_repairs_trailing_comma(monkeypatch):
+    class TrailingCommaModel:
+        def generate_content(self, prompt, generation_config=None):
+            return SimpleNamespace(text='[{"title": "AI Event", "date": "2026-01-05", "type": "lecture",}]')
+
+    def fake_init(self):
+        self.model = TrailingCommaModel()
+        self.source = "Test AI"
+        self.api_key = "dummy"
+        self.use_vertex = False
+        self.current_year = config.DEFAULT_YEAR
+        self.cache_ttl_seconds = 900
+        self._ai_cache = {}
+        self.processing_mode = "ai"
+        self.fallback_reason = None
+        self.last_raw_response = None
+        self.last_prompt = None
+
+    monkeypatch.setattr(BaseParser, "__init__", fake_init)
+
+    parser = BaseParser()
+    events = parser.extract_events_with_ai("Lecture week")
+
+    assert parser.processing_mode == "ai"
+    assert parser.fallback_reason is None
+    assert len(events) == 1
+    assert events[0]["date"] == "2026-01-05"
+
+
+def test_base_parser_handles_markdown_fence(monkeypatch):
+    class FencedModel:
+        def generate_content(self, prompt, generation_config=None):
+            return SimpleNamespace(text="""
+```json
+[{"title": "Midterm", "date": "2026-03-10", "type": "exam", "location": "Room 12", "start_time": "10:00"}]
+```
+""")
+
+    def fake_init(self):
+        self.model = FencedModel()
+        self.source = "Test AI"
+        self.api_key = "dummy"
+        self.use_vertex = False
+        self.current_year = config.DEFAULT_YEAR
+        self.cache_ttl_seconds = 900
+        self._ai_cache = {}
+        self.processing_mode = "ai"
+        self.fallback_reason = None
+        self.last_raw_response = None
+        self.last_prompt = None
+
+    monkeypatch.setattr(BaseParser, "__init__", fake_init)
+
+    parser = BaseParser()
+    events = parser.extract_events_with_ai("Exam schedule")
+
+    assert parser.processing_mode == "ai"
+    assert parser.fallback_reason is None
+    assert len(events) == 1
+    assert events[0]["type"] == "exam"
+    assert events[0]["location"] == "Room 12"
+    assert events[0]["start_time"] == "10:00"
