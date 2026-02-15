@@ -47,13 +47,8 @@ class ICSGenerator:
             # Title with module name
             title = item.get('title', 'Untitled Event')
             module = item.get('module', '')
-            
-            # Prepend module name to title if available
-            if module:
-                full_title = f"{module} - {title}"
-            else:
-                full_title = title
-            
+
+            full_title = f"{module} - {title}" if module else title
             event.add('summary', full_title)
             
             # Description
@@ -63,62 +58,102 @@ class ICSGenerator:
             if item.get('type'):
                 description_parts.append(f"Type: {item['type'].capitalize()}")
             if module and module not in full_title:
-                # If module wasn't in title, add to description
                 description_parts.append(f"Module: {module}")
+            if item.get('location'):
+                description_parts.append(f"Location: {item['location']}")
             if description_parts:
                 event.add('description', '\n'.join(description_parts))
             
-            # Date parsing
+            # Date/time parsing
             start_date = item.get('date')
+            start_time = item.get('start_time') or item.get('time')
+            end_time = item.get('end_time')
 
             if start_date:
                 try:
-                    # Handle full datetime or just date
                     if 'T' in start_date:
                         dt_start = datetime.fromisoformat(start_date)
                     else:
-                        # Parse as date only
-                        dt_start = datetime.strptime(start_date, "%Y-%m-%d").date()
-                        
-                    event.add('dtstart', dt_start)
-                    
-                    # Assume 1 hour duration if no end time, or all day if date only
+                        base_date = datetime.strptime(start_date, "%Y-%m-%d").date()
+                        if start_time:
+                            dt_start = datetime.combine(base_date, datetime.strptime(start_time, "%H:%M").time())
+                        else:
+                            dt_start = base_date
+
                     if isinstance(dt_start, datetime):
-                        event.add('dtend', dt_start + timedelta(hours=1))
+                        if end_time:
+                            dt_end = datetime.combine(dt_start.date(), datetime.strptime(end_time, "%H:%M").time())
+                            if dt_end <= dt_start:
+                                dt_end = dt_start + timedelta(hours=1)
+                        else:
+                            dt_end = dt_start + timedelta(hours=1)
                     else:
-                        event.add('dtend', dt_start)  # All day event
-                    
-                    # Add event type as category
+                        dt_end = dt_start
+
+                    event.add('dtstart', dt_start)
+                    event.add('dtend', dt_end)
+
+                    if item.get('location'):
+                        event.add('location', item.get('location'))
+
                     if item.get('type'):
                         event.add('categories', [item['type'].upper()])
-                    
-                    # Set priority based on event type
+
                     event_type = item.get('type', '').lower()
-                    if event_type == 'exam':
-                        event.add('priority', 1)  # High priority
-                    elif event_type in ['assignment', 'project']:
-                        event.add('priority', 5)  # Medium priority
-                    else:
-                        event.add('priority', 9)  # Low priority
-                    
-                    # Add reminder for assignments and exams (groundwork for future feature)
-                    if event_type in ['assignment', 'exam', 'project']:
+                    priority = item.get('priority')
+                    if priority is None:
+                        if event_type == 'exam':
+                            priority = 1
+                        elif event_type in ['assignment', 'project']:
+                            priority = 3 if event_type == 'project' else 5
+                        else:
+                            priority = 9
+                    event.add('priority', priority)
+
+                    reminder_minutes = []
+                    for reminder in item.get('reminders') or []:
+                        try:
+                            minutes = int(reminder)
+                            if minutes > 0:
+                                reminder_minutes.append(minutes)
+                        except (TypeError, ValueError):
+                            continue
+
+                    if reminder_minutes:
+                        # Ensure deterministic order and avoid duplicates
+                        unique_minutes = sorted(set(reminder_minutes))
+                        base_dt = dt_start if isinstance(dt_start, datetime) else datetime.combine(dt_start, datetime.min.time())
+                        for minutes_before in unique_minutes:
+                            alarm = Alarm()
+                            alarm.add('action', 'DISPLAY')
+                            alarm.add('description', f'Reminder: {title}')
+                            alarm.add('trigger', timedelta(minutes=-minutes_before))
+                            event.add_component(alarm)
+                    elif event_type in ['assignment', 'exam', 'project']:
+                        # Preserve default reminder when user did not set any
                         alarm = Alarm()
                         alarm.add('action', 'DISPLAY')
                         alarm.add('description', f'Reminder: {title}')
-                        # Reminder 1 day before
                         alarm.add('trigger', timedelta(days=-1))
                         event.add_component(alarm)
-                    
-                    # Add unique identifier
-                    event.add('uid', f'{hash(f"{title}{start_date}")}@syllabus-sync.app')
+
+                    recurrence = item.get('recurrence')
+                    if isinstance(recurrence, dict) and recurrence.get('freq'):
+                        freq = recurrence.get('freq', '').upper()
+                        rrule_parts = [f'FREQ={freq}']
+                        if recurrence.get('count'):
+                            rrule_parts.append(f'COUNT={recurrence.get("count")}')
+                        if recurrence.get('until'):
+                            rrule_parts.append(f'UNTIL={recurrence.get("until")}')
+                        event.add('rrule', ';'.join(rrule_parts))
+
+                    event.add('uid', f'{hash(f"{title}{start_date}{start_time}")}@syllabus-sync.app')
                     event.add('dtstamp', datetime.now())
-                    
+
                     cal.add_component(event)
-                    
+
                 except ValueError as e:
-                    # Skip events with invalid dates
-                    print(f"WARNING: Skipping event '{title}' due to invalid date format: {start_date} ({e})")
+                    print(f"WARNING: Skipping event '{title}' due to invalid date/time format: {start_date} ({e})")
                     continue
 
         return cal.to_ical()

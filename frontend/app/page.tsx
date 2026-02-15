@@ -25,6 +25,7 @@ interface Event {
   type: string;
   description?: string;
   module?: string;
+  reminders?: number[];
 }
 
 export default function Home() {
@@ -81,7 +82,11 @@ export default function Home() {
           'Content-Type': 'multipart/form-data',
         },
       });
-      setEvents(response.data.events);
+      const normalizedEvents: Event[] = (response.data.events || []).map((evt: Event) => ({
+        ...evt,
+        reminders: evt.reminders ?? [],
+      }));
+      setEvents(normalizedEvents);
       setExtractionSource(response.data.extraction_source);
     } catch (err: any) {
       console.error(err);
