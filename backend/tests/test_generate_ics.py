@@ -49,3 +49,40 @@ def test_generate_ics_requires_time():
     response = client.post("/generate-ics", json=payload)
     assert response.status_code == 400
     assert "time" in str(response.json().get("detail", ""))
+
+
+def test_integration_upload_then_export(monkeypatch, tmp_path):
+    tmp_file = tmp_path / "sample.pdf"
+    tmp_file.write_bytes(b"%PDF-1.4")
+
+    class DummyParser:
+        def __init__(self, *args, **kwargs):
+            self.source = "Dummy"
+            self.processing_mode = "ai"
+            self.fallback_reason = None
+            self.extraction_warning = None
+
+        def parse(self, _path):
+            return [
+                {
+                    "title": "Lecture 1",
+                    "date": "2026-01-10",
+                    "time": "09:00:00",
+                    "type": "lecture",
+                    "description": "Intro",
+                    "module": "CS101",
+                }
+            ]
+
+    monkeypatch.setattr("main.select_parser", lambda _ext: DummyParser())
+
+    upload_resp = client.post(
+        "/upload",
+        files={"file": ("sample.pdf", tmp_file.read_bytes(), "application/pdf")},
+    )
+    assert upload_resp.status_code == 200
+    events = upload_resp.json()["events"]
+    # Simulate frontend edit (no-op) then export
+    export_resp = client.post("/generate-ics", json=events)
+    assert export_resp.status_code == 200
+    assert "BEGIN:VCALENDAR" in export_resp.text

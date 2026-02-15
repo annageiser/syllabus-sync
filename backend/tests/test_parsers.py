@@ -2,6 +2,7 @@ from types import SimpleNamespace
 
 import pandas as pd
 import pdfplumber
+import parsers.pdf_parser as pdf_parser
 import pytest
 
 from config import config
@@ -51,8 +52,77 @@ def test_pdf_parser_uses_extracted_text(monkeypatch, tmp_path):
 
     assert len(events) == 1
     assert events[0]["date"] == "2026-04-05"
-    assert "Lecture 1" in events[0]["title"]
+    assert "Introduction" in events[0]["title"]
     assert events[0]["type"] == "lecture"
+
+
+def test_pdf_parser_warns_on_empty_text(monkeypatch, tmp_path):
+    tmp_file = tmp_path / "empty.pdf"
+    tmp_file.write_bytes(b"%PDF-1.4")
+
+    class EmptyPage:
+        def extract_text(self):
+            return ""
+
+        def extract_words(self):
+            return []
+
+    class EmptyPDF:
+        def __init__(self):
+            self.pages = [EmptyPage()]
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    monkeypatch.setattr(pdfplumber, "open", lambda _: EmptyPDF())
+    monkeypatch.setattr(pdf_parser, "HAS_TESSERACT", False)
+    monkeypatch.setattr(pdf_parser, "HAS_PIL", False)
+
+    parser = PDFParser()
+    events = parser.parse(str(tmp_file))
+
+    assert events == []
+    assert parser.extraction_warning == "low_text_quality"
+
+
+def test_pdf_parser_uses_ocr_when_no_text(monkeypatch, tmp_path):
+    tmp_file = tmp_path / "ocr.pdf"
+    tmp_file.write_bytes(b"%PDF-1.4")
+
+    class ImagePage:
+        def extract_text(self):
+            return ""
+
+        def extract_words(self):
+            return []
+
+        def to_image(self, resolution=300):
+            return SimpleNamespace(original="fake_image")
+
+    class ImagePDF:
+        def __init__(self):
+            self.pages = [ImagePage()]
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    def fake_ocr(self, page):
+        return "2026-04-05 OCR Lecture content " + ("details " * 10)
+
+    monkeypatch.setattr(pdfplumber, "open", lambda _: ImagePDF())
+    monkeypatch.setattr(PDFParser, "_ocr_page", fake_ocr)
+
+    parser = PDFParser()
+    events = parser.parse(str(tmp_file))
+
+    assert len(events) >= 1
+    assert parser.extraction_warning is None
 
 
 def test_excel_parser_flattens_sheet_content(monkeypatch, tmp_path):

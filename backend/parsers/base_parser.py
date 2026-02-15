@@ -48,6 +48,10 @@ class BaseParser:
         self.fallback_reason = None
         self.last_raw_response = None
         self.last_prompt = None
+        self.extraction_warning = None
+        self.last_text_length = 0
+        self.last_text_sample = ""
+        self.file_type = None
         
         if self.api_key:
             if not HAS_GOOGLE_AI:
@@ -242,6 +246,15 @@ class BaseParser:
             Exception: If AI processing fails
         """
         normalized_text = text_content.strip()
+        self.last_text_length = len(normalized_text)
+        self.last_text_sample = normalized_text[:500]
+
+        if config.DEBUG:
+            ftype = getattr(self, "file_type", "unknown") or "unknown"
+            print(f"[extract_events_with_ai] file_type={ftype} len={self.last_text_length} sample={self.last_text_sample!r}")
+
+        if self.last_text_length < 30 and not getattr(self, "extraction_warning", None):
+            self.extraction_warning = "low_text_quality"
 
         system_prompt = """
 You are a JSON emitter. Output ONLY valid JSON. No markdown, no extra text.

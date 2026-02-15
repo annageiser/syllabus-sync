@@ -22,6 +22,7 @@ const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
 interface Event {
   title: string;
   date: string;
+  time: string;
   type: string;
   description?: string;
   module?: string;
@@ -70,6 +71,36 @@ export default function Home() {
 
   const toggleTheme = () => setTheme(prev => prev === 'dark' ? 'light' : 'dark');
 
+  const normalizeEvent = (evt: any): Event => {
+    const safeTitle = (evt?.title || '').trim() || 'Untitled';
+    const safeType = (evt?.type || 'event').toLowerCase();
+    const safeDate = (evt?.date || '').slice(0, 10);
+    const safeTime = (() => {
+      const t = (evt?.time || evt?.start_time || '').trim();
+      if (/^\d{2}:\d{2}/.test(t)) return t.slice(0, 5);
+      return '09:00';
+    })();
+    return {
+      title: safeTitle,
+      date: safeDate,
+      time: safeTime,
+      type: safeType,
+      description: evt?.description || '',
+      module: evt?.module || '',
+      reminders: Array.isArray(evt?.reminders) ? evt.reminders : [],
+    };
+  };
+
+  const validateEvents = (list: Event[]): string | null => {
+    for (const [idx, evt] of list.entries()) {
+      if (!evt.title.trim()) return `Row ${idx + 1}: title is required`;
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(evt.date)) return `Row ${idx + 1}: invalid date format`;
+      if (!/^\d{2}:\d{2}$/.test(evt.time)) return `Row ${idx + 1}: invalid time format`;
+      if (!evt.type) return `Row ${idx + 1}: type is required`;
+    }
+    return null;
+  };
+
   const handleFileUpload = async (file: File) => {
     setLoading(true);
     setError(null);
@@ -82,10 +113,12 @@ export default function Home() {
           'Content-Type': 'multipart/form-data',
         },
       });
-      const normalizedEvents: Event[] = (response.data.events || []).map((evt: Event) => ({
-        ...evt,
-        reminders: evt.reminders ?? [],
-      }));
+      const normalizedEvents: Event[] = (response.data.events || []).map(normalizeEvent);
+      const validationError = validateEvents(normalizedEvents);
+      if (validationError) {
+        setError(validationError);
+        return;
+      }
       setEvents(normalizedEvents);
       setExtractionSource(response.data.extraction_source);
     } catch (err: any) {
@@ -106,7 +139,15 @@ export default function Home() {
     try {
       if (!events.length) return;
 
-      const response = await axios.post(`${API_URL}/generate-ics`, events, {
+      const validationError = validateEvents(events);
+      if (validationError) {
+        setError(validationError);
+        return;
+      }
+
+      const payload = events.map(evt => ({ ...evt, time: `${evt.time}:00` }));
+
+      const response = await axios.post(`${API_URL}/generate-ics`, payload, {
         responseType: 'blob',
         headers: {
           'Accept': 'text/calendar',
@@ -117,7 +158,16 @@ export default function Home() {
       saveAs(blob, 'syllabus-events.ics');
     } catch (err: any) {
       console.error("Export Error:", err);
-      setError('Failed to generate ICS file.');
+      let message = 'Failed to generate ICS file.';
+      if (err.response?.data?.detail) {
+        const detail = err.response.data.detail;
+        if (Array.isArray(detail)) {
+          message = detail.map((d: any) => d.msg || JSON.stringify(d)).join('; ');
+        } else if (typeof detail === 'string') {
+          message = detail;
+        }
+      }
+      setError(message);
     }
   };
 
