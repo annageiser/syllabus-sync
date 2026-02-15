@@ -27,13 +27,20 @@ interface Event {
   description?: string;
   module?: string;
   reminders?: number[];
+  confidence?: number;
+  low_confidence_fields?: string[];
 }
 
 export default function Home() {
   const [events, setEvents] = useState<Event[]>([]);
   const [extractionSource, setExtractionSource] = useState<string | null>(null);
+  const [processingMode, setProcessingMode] = useState<string | null>(null);
+  const [fallbackReason, setFallbackReason] = useState<string | null>(null);
+  const [extractionWarning, setExtractionWarning] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const [statusMessage, setStatusMessage] = useState<string>('Idle');
   const [error, setError] = useState<string | null>(null);
+  const [lastFile, setLastFile] = useState<File | null>(null);
   const [theme, setTheme] = useState<'dark' | 'light'>('dark');
   const [mounted, setMounted] = useState(false);
   const [mousePos, setMousePos] = useState({ x: 0, y: 0 });
@@ -88,6 +95,8 @@ export default function Home() {
       description: evt?.description || '',
       module: evt?.module || '',
       reminders: Array.isArray(evt?.reminders) ? evt.reminders : [],
+      confidence: typeof evt?.confidence === 'number' ? evt.confidence : 0.5,
+      low_confidence_fields: Array.isArray(evt?.low_confidence_fields) ? evt.low_confidence_fields : [],
     };
   };
 
@@ -103,7 +112,9 @@ export default function Home() {
 
   const handleFileUpload = async (file: File) => {
     setLoading(true);
+    setStatusMessage('Uploading & parsing...');
     setError(null);
+    setLastFile(file);
     const formData = new FormData();
     formData.append('file', file);
 
@@ -121,17 +132,35 @@ export default function Home() {
       }
       setEvents(normalizedEvents);
       setExtractionSource(response.data.extraction_source);
+      setProcessingMode(response.data.processing_mode);
+      setFallbackReason(response.data.fallback_reason);
+      setExtractionWarning(response.data.extraction_warning);
+      setStatusMessage(response.data.processing_mode === 'heuristic' ? 'Parsed via fallback (heuristic)' : 'Parsed via AI');
     } catch (err: any) {
       console.error(err);
       let errorMessage = 'Failed to process file. Please try again.';
       if (err.response?.data?.detail) {
-        errorMessage = typeof err.response.data.detail === 'string' ? err.response.data.detail : 'Check file format.';
+        const detail = err.response.data.detail;
+        if (Array.isArray(detail)) {
+          errorMessage = detail.map((d: any) => d.msg || JSON.stringify(d)).join('; ');
+        } else if (typeof detail === 'string') {
+          errorMessage = detail;
+        } else if (detail?.error) {
+          errorMessage = detail.error;
+        }
       } else if (err.message === 'Network Error') {
         errorMessage = 'Server unreachable. Is the backend running?';
       }
       setError(errorMessage);
+      setStatusMessage('Error');
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleRetry = () => {
+    if (lastFile) {
+      handleFileUpload(lastFile);
     }
   };
 
@@ -244,6 +273,27 @@ export default function Home() {
           <section id="upload-zone" className="animate-slide-up" style={{ animationDelay: '200ms' }}>
             <FileUploader onFileUpload={handleFileUpload} />
 
+            <div className="mt-4 flex flex-wrap items-center gap-3 text-sm font-semibold text-slate-400">
+              <span className="px-3 py-1 rounded-full bg-slate-500/10 border border-slate-500/20">Status: {statusMessage}</span>
+              {processingMode && (
+                <span className="px-3 py-1 rounded-full bg-indigo-500/10 border border-indigo-500/20 text-indigo-300">Mode: {processingMode}</span>
+              )}
+              {fallbackReason && (
+                <span className="px-3 py-1 rounded-full bg-amber-500/10 border border-amber-500/30 text-amber-400">Fallback: {fallbackReason}</span>
+              )}
+              {extractionWarning && (
+                <span className="px-3 py-1 rounded-full bg-rose-500/10 border border-rose-500/30 text-rose-400">Warning: {extractionWarning}</span>
+              )}
+              {lastFile && !loading && (
+                <button
+                  onClick={handleRetry}
+                  className="px-4 py-2 rounded-xl bg-slate-800 text-slate-100 border border-slate-600 hover:border-indigo-400 hover:text-indigo-200 transition-all"
+                >
+                  Retry last upload
+                </button>
+              )}
+            </div>
+
             {loading && (
               <div className="mt-12 flex flex-col items-center gap-6 text-indigo-500 animate-pulse">
                 <div className="relative">
@@ -251,12 +301,23 @@ export default function Home() {
                   <div className="absolute inset-0 h-10 w-10 blur-xl bg-indigo-500/30"></div>
                 </div>
                 <span className="font-bold text-lg tracking-widest uppercase">Analyzing Document Layers...</span>
+                <span className="text-sm text-slate-400">This may take up to 30s for large PDFs.</span>
               </div>
             )}
 
             {error && (
               <div className="mt-8 p-6 rounded-2xl glass border-rose-500/30 bg-rose-500/5 text-rose-500 text-center font-bold" role="alert">
                 {error}
+                {lastFile && (
+                  <div className="mt-3">
+                    <button
+                      onClick={handleRetry}
+                      className="px-4 py-2 rounded-xl bg-rose-500/10 border border-rose-500/40 text-rose-100 hover:border-rose-300 transition"
+                    >
+                      Retry last file
+                    </button>
+                  </div>
+                )}
               </div>
             )}
           </section>
@@ -269,6 +330,15 @@ export default function Home() {
                   <h2 className="text-4xl font-bold mb-2">Schedule Draft</h2>
                   <p className="text-slate-500 flex items-center gap-2 font-medium">
                     <Cpu size={14} /> Processed via <span className="text-indigo-500 font-bold">{extractionSource}</span>
+                    {processingMode && (
+                      <span className="ml-2 px-2 py-1 rounded-lg bg-slate-500/10 text-xs font-bold uppercase tracking-wide">{processingMode}</span>
+                    )}
+                    {fallbackReason && (
+                      <span className="ml-2 px-2 py-1 rounded-lg bg-amber-500/10 text-amber-400 text-xs font-bold">Fallback: {fallbackReason}</span>
+                    )}
+                    {extractionWarning && (
+                      <span className="ml-2 px-2 py-1 rounded-lg bg-rose-500/10 text-rose-400 text-xs font-bold">Warning: {extractionWarning}</span>
+                    )}
                   </p>
                 </div>
 

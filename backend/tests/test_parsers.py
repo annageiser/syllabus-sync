@@ -54,6 +54,8 @@ def test_pdf_parser_uses_extracted_text(monkeypatch, tmp_path):
     assert events[0]["date"] == "2026-04-05"
     assert "Introduction" in events[0]["title"]
     assert events[0]["type"] == "lecture"
+    assert "confidence" in events[0]
+    assert "low_confidence_fields" in events[0]
 
 
 def test_pdf_parser_warns_on_empty_text(monkeypatch, tmp_path):
@@ -314,6 +316,7 @@ def test_ai_rewrites_generic_title_from_description(monkeypatch):
 
     assert events[0]["title"] == "Linear Regression basics and labs"
     assert events[0]["description"] == "Week 3: Linear Regression basics and labs"
+    assert events[0]["confidence"] <= 1
 
 
 def test_ai_truncates_long_title_and_merges_notes(monkeypatch):
