@@ -44,12 +44,16 @@ class BaseParser:
         """
         self.use_vertex = False
         self.api_key = config.GEMINI_API_KEY
+        self.processing_mode = "ai"
+        self.fallback_reason = None
+        self.last_raw_response = None
+        self.last_prompt = None
         
         if self.api_key:
             if not HAS_GOOGLE_AI:
                 raise RuntimeError("google-generativeai package not installed")
             if config.DEBUG:
-                print("Initializing with Google AI SDK (API Key)")
+                print(f"Initializing with Google AI SDK (API Key present: {bool(self.api_key)}) using model '{config.GEMINI_MODEL}'")
             genai.configure(api_key=self.api_key)
             model_name = config.GEMINI_MODEL
             self.model = genai.GenerativeModel(model_name)
@@ -58,7 +62,7 @@ class BaseParser:
             if not HAS_VERTEX:
                 raise RuntimeError("google-cloud-aiplatform package not installed")
             if config.DEBUG:
-                print(f"Initializing with Vertex AI (Project: {config.GOOGLE_CLOUD_PROJECT})")
+                print(f"Initializing with Vertex AI (Project: {config.GOOGLE_CLOUD_PROJECT}, Model: {config.GEMINI_MODEL})")
             vertexai.init(project=config.GOOGLE_CLOUD_PROJECT, location=config.VERTEX_AI_LOCATION)
             self.model = VertexModel(config.GEMINI_MODEL)
             self.use_vertex = True
@@ -68,6 +72,8 @@ class BaseParser:
                 print("WARNING: No AI configuration found. Using HEURISTIC OFFLINE EXTRACTION only.")
             self.model = None
             self.source = "Local Heuristic (Offline)"
+            self.processing_mode = "heuristic"
+            self.fallback_reason = "no_model_configured"
         
         self.current_year = config.DEFAULT_YEAR
         # Simple in-memory cache for AI responses keyed by normalized text content
@@ -102,6 +108,75 @@ class BaseParser:
         target_monday = week_1_monday + timedelta(weeks=week_num - 1)
         
         return target_monday.strftime("%Y-%m-%d")
+
+    def _strip_markdown_fences(self, text: str) -> str:
+        """Remove common markdown fences around JSON blocks."""
+        if "```json" in text:
+            return text.split("```json", 1)[1].split("```", 1)[0]
+        if "```" in text:
+            return text.split("```", 1)[1].split("```", 1)[0]
+        return text
+
+    def _extract_first_json_array(self, text: str) -> str | None:
+        """Extract the first JSON array using a simple bracket counter."""
+        start = text.find("[")
+        if start == -1:
+            return None
+        depth = 0
+        for idx, ch in enumerate(text[start:], start=start):
+            if ch == "[":
+                depth += 1
+            elif ch == "]":
+                depth -= 1
+                if depth == 0:
+                    return text[start : idx + 1]
+        return None
+
+    def _close_unbalanced_delimiters(self, text: str) -> str:
+        """Close any unbalanced brackets/braces to handle truncated output."""
+        opens = text.count("[") - text.count("]")
+        if opens > 0:
+            text += "]" * opens
+        brace_opens = text.count("{") - text.count("}")
+        if brace_opens > 0:
+            text += "}" * brace_opens
+        return text
+
+    def _try_parse_json(self, raw_text: str):
+        """Attempt to parse JSON with light repair passes; returns (events, attempts)."""
+        attempts = []
+
+        def attempt(label: str, candidate: str):
+            try:
+                return json.loads(candidate), label
+            except json.JSONDecodeError as exc:
+                attempts.append(f"{label}: {exc}")
+                return None, None
+
+        cleaned = self._strip_markdown_fences(raw_text).strip()
+        events, label = attempt("raw", cleaned)
+        if events is not None:
+            return events, label
+
+        extracted = self._extract_first_json_array(cleaned)
+        if extracted:
+            events, label = attempt("extracted_array", extracted)
+            if events is not None:
+                return events, label
+
+        no_trailing_commas = re.sub(r",\s*([}\]])", r"\1", extracted or cleaned)
+        if no_trailing_commas != cleaned:
+            events, label = attempt("trim_trailing_commas", no_trailing_commas)
+            if events is not None:
+                return events, label
+
+        balanced = self._close_unbalanced_delimiters(no_trailing_commas)
+        if balanced != no_trailing_commas:
+            events, label = attempt("close_unbalanced", balanced)
+            if events is not None:
+                return events, label
+
+        return None, attempts
     
     def extract_events_with_ai(self, text_content: str) -> list:
         """
@@ -127,56 +202,32 @@ class BaseParser:
         """
         normalized_text = text_content.strip()
 
+        system_prompt = """
+You are a JSON emitter. Output ONLY valid JSON. No markdown, no extra text.
+Return a JSON array of event objects. If you cannot find events, return an empty JSON array [] and nothing else.
+"""
+
         prompt = f"""
 Analyze the uploaded academic syllabus or course schedule document and extract ALL events, deadlines, assignments, exams, lectures, and important dates.
 
-**EXTRACT THE FOLLOWING FIELDS FOR EACH EVENT:**
+Schema (array of objects):
+- module: string
+- title: string
+- date: string (YYYY-MM-DD) OR use calendar_week: number when only week present
+- calendar_week: number (optional, when exact date missing)
+- start_time: string (HH:MM, 24h, optional)
+- end_time: string (HH:MM, 24h, optional)
+- location: string (optional)
+- type: string (lecture|assignment|exam|project|event)
+- recurrence: object (optional) with keys freq ("weekly"|"monthly"|"daily"), count (number, optional), until (YYYYMMDD, optional)
+- priority: number 1-9 (optional)
+- description: string (optional)
 
-1. **module**: Course/module name or code (e.g., "CS101").
-2. **title**: Event title (lecture name, assignment, exam, project, etc.).
-3. **date** OR **calendar_week**: Use YYYY-MM-DD for exact dates. If only week numbers (CW/KW/Week/Woche/etc.), return "calendar_week".
-4. **start_time** and optional **end_time**: 24h HH:MM. If only one time is present, set it as start_time.
-5. **location**: Room/building/URL if present.
-6. **type**: lecture, assignment, exam, project, event (normalize "test"→exam, "homework"→assignment).
-7. **recurrence**: For repeating sessions (e.g., weekly lectures), return {{"freq": "weekly", "count": N}} where N is occurrences if known.
-8. **priority**: 1-9 (1 highest). Use 1 for exams, 3 for projects, 5 for assignments, 9 for lectures/events unless weighting hints higher stakes.
-9. **description**: Topics, chapters, notes.
-
-**OUTPUT FORMAT:**
-Return ONLY valid JSON (no markdown):
-[
-    {{
-        "module": "CS101",
-        "title": "Midterm Exam",
-        "date": "2026-03-15",
-        "start_time": "10:00",
-        "type": "exam",
-        "priority": 1,
-        "location": "Room 201",
-        "description": "Ch 1-5",
-        "recurrence": null
-    }},
-    {{
-        "module": "CS101",
-        "title": "Lecture: Databases",
-        "date": "2026-02-18",
-        "start_time": "14:00",
-        "end_time": "16:00",
-        "type": "lecture",
-        "location": "Zoom",
-        "recurrence": {{"freq": "weekly", "count": 12}}
-    }},
-    {{
-        "module": "CS101",
-        "title": "Homework 3",
-        "calendar_week": 12,
-        "type": "assignment",
-        "priority": 5,
-        "description": "Linear algebra problems"
-    }}
-]
-
-Rules: extract ALL events; assume year {self.current_year} when missing; skip entries without any date/week; normalize types; prefer structured outputs with times/locations/recurrence when present. Return [] if none.
+Rules:
+- Assume year {self.current_year} when missing.
+- Skip items without any date/week.
+- Normalize types (test→exam, homework→assignment).
+- Output ONLY the JSON array. No prose, no code fences, no markdown.
 """
 
         # If no AI model is configured, fall back immediately
@@ -184,6 +235,8 @@ Rules: extract ALL events; assume year {self.current_year} when missing; skip en
             if config.DEBUG:
                 print("No AI model configured, using heuristic extraction")
             self.source = "Local Heuristic (Offline)"
+            self.processing_mode = "heuristic"
+            self.fallback_reason = self.fallback_reason or "no_model_configured"
             return self.heuristic_extraction(text_content)
 
         cache_key = None
@@ -196,6 +249,8 @@ Rules: extract ALL events; assume year {self.current_year} when missing; skip en
             if cached:
                 ts, cached_events = cached
                 if time.time() - ts < self.cache_ttl_seconds:
+                    self.processing_mode = "ai"
+                    self.fallback_reason = None
                     return copy.deepcopy(cached_events)
                 else:
                     # Expired
@@ -205,104 +260,117 @@ Rules: extract ALL events; assume year {self.current_year} when missing; skip en
             cache_key = None
 
         try:
-            full_prompt = f"{prompt}\n\nDOCKET CONTENT:\n{text_content}"
+            full_prompt = f"{system_prompt}\n\n{prompt}\n\nDOCKET CONTENT:\n{text_content}"
             generation_config = {
-                "max_output_tokens": 512,
+                "max_output_tokens": 768,
                 "temperature": 0.2,
             }
+
+            self.last_prompt = full_prompt
+            if config.DEBUG:
+                print(f"Calling AI model '{self.source}' with generation_config={generation_config} (API key present: {bool(self.api_key)})")
 
             response = self.model.generate_content(
                 full_prompt,
                 generation_config=generation_config,
             )
             response_text = response.text.strip()
+            self.last_raw_response = response_text
 
             if config.DEBUG:
-                print(f"AI Response (first 100 chars): {response_text[:100]}...")
+                print(f"AI raw response: {response_text}")
 
-            # Clean up markdown fences if present
-            if "```json" in response_text:
-                response_text = response_text.split("```json")[-1].split("```")[0]
-            elif "```" in response_text:
-                response_text = response_text.split("```")[-1].split("```")[0]
-
-            response_text = response_text.strip()
-
-            try:
-                events = json.loads(response_text)
-                if not isinstance(events, list):
-                    self.source = "Local Heuristic (Fallback: Invalid JSON structure)"
-                    return self.heuristic_extraction(text_content)
-
-                normalized_events = []
-                for event in events:
-                    if not isinstance(event, dict):
-                        continue
-
-                    normalized_event = {
-                        "module": event.get("module", ""),
-                        "title": event.get("title", "Untitled"),
-                        "type": (event.get("type", "event")).lower(),
-                        "description": event.get("description", ""),
-                    }
-
-                    date_str = event.get("date")
-                    calendar_week = event.get("calendar_week")
-
-                    if date_str:
-                        normalized_event["date"] = date_str
-                    elif calendar_week:
-                        try:
-                            normalized_event["date"] = self.convert_calendar_week_to_date(int(calendar_week))
-                        except Exception:
-                            continue
-                    else:
-                        continue
-
-                    # Optional structured fields
-                    if event.get("start_time"):
-                        normalized_event["start_time"] = event.get("start_time")
-                    elif event.get("time"):
-                        normalized_event["start_time"] = event.get("time")
-                    if event.get("end_time"):
-                        normalized_event["end_time"] = event.get("end_time")
-                    if event.get("location"):
-                        normalized_event["location"] = event.get("location")
-                    if event.get("priority"):
-                        normalized_event["priority"] = event.get("priority")
-                    if event.get("recurrence"):
-                        normalized_event["recurrence"] = event.get("recurrence")
-
-                    normalized_events.append(normalized_event)
-
-                # Store successful result in cache
-                if cache_key:
-                    try:
-                        self._ai_cache[cache_key] = (time.time(), copy.deepcopy(normalized_events))
-                        # Simple eviction to keep cache bounded
-                        if len(self._ai_cache) > 256:
-                            oldest_key = min(self._ai_cache.items(), key=lambda kv: kv[1][0])[0]
-                            self._ai_cache.pop(oldest_key, None)
-                    except Exception:
-                        pass
-
-                return normalized_events
-
-            except json.JSONDecodeError:
+            if not response_text:
                 if config.DEBUG:
-                    print("JSON Decode Error, falling back to heuristic")
-                self.source = "Local Heuristic (Fallback: JSON Parse Error)"
+                    print("AI returned empty output; falling back to heuristic")
+                self.processing_mode = "heuristic"
+                self.fallback_reason = "empty_output"
                 return self.heuristic_extraction(text_content)
+
+            events, parse_label = self._try_parse_json(response_text)
+            if events is None:
+                if config.DEBUG:
+                    print(f"JSON Decode Error/repair failed ({parse_label}); falling back to heuristic")
+                self.source = "Local Heuristic (Fallback: JSON Parse Error)"
+                self.processing_mode = "heuristic"
+                self.fallback_reason = "json_parse_error"
+                return self.heuristic_extraction(text_content)
+
+            if not isinstance(events, list):
+                self.source = "Local Heuristic (Fallback: Invalid JSON structure)"
+                self.processing_mode = "heuristic"
+                self.fallback_reason = "invalid_json_structure"
+                return self.heuristic_extraction(text_content)
+
+            normalized_events = []
+            for event in events:
+                if not isinstance(event, dict):
+                    continue
+
+                normalized_event = {
+                    "module": event.get("module", ""),
+                    "title": event.get("title", "Untitled"),
+                    "type": (event.get("type", "event")).lower(),
+                    "description": event.get("description", ""),
+                }
+
+                date_str = event.get("date")
+                calendar_week = event.get("calendar_week")
+
+                if date_str:
+                    normalized_event["date"] = date_str
+                elif calendar_week:
+                    try:
+                        normalized_event["date"] = self.convert_calendar_week_to_date(int(calendar_week))
+                    except Exception:
+                        continue
+                else:
+                    continue
+
+                # Optional structured fields
+                if event.get("start_time"):
+                    normalized_event["start_time"] = event.get("start_time")
+                elif event.get("time"):
+                    normalized_event["start_time"] = event.get("time")
+                if event.get("end_time"):
+                    normalized_event["end_time"] = event.get("end_time")
+                if event.get("location"):
+                    normalized_event["location"] = event.get("location")
+                if event.get("priority"):
+                    normalized_event["priority"] = event.get("priority")
+                if event.get("recurrence"):
+                    normalized_event["recurrence"] = event.get("recurrence")
+
+                normalized_events.append(normalized_event)
+
+            # Store successful result in cache
+            if cache_key:
+                try:
+                    self._ai_cache[cache_key] = (time.time(), copy.deepcopy(normalized_events))
+                    # Simple eviction to keep cache bounded
+                    if len(self._ai_cache) > 256:
+                        oldest_key = min(self._ai_cache.items(), key=lambda kv: kv[1][0])[0]
+                        self._ai_cache.pop(oldest_key, None)
+                except Exception:
+                    pass
+
+            self.processing_mode = "ai"
+            self.fallback_reason = None
+
+            return normalized_events
 
         except Exception as e:
             if config.DEBUG:
                 print(f"AI Extraction failed: {e}")
                 print("Falling back to HEURISTIC OFFLINE EXTRACTION")
             self.source = f"Local Heuristic (Fallback: AI Error - {str(e)})"
+            self.processing_mode = "heuristic"
+            self.fallback_reason = f"api_failure: {str(e)}"
             return self.heuristic_extraction(text_content)
         
     def heuristic_extraction(self, text: str) -> list:
         """Offline heuristic extraction using regex and keyword matching."""
+        self.processing_mode = "heuristic"
         events = []
         lines = text.split('\n')
 

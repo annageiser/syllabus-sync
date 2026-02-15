@@ -162,11 +162,18 @@ async def upload_file(request: Request, file: UploadFile = File(...)):
             )
 
         source = parser.source if parser else "Unknown"
+        processing_mode = getattr(parser, "processing_mode", "unknown")
+        fallback_reason = getattr(parser, "fallback_reason", None)
 
         if config.DEBUG:
-            print(f"Extracted {len(events)} events from {file.filename} using {source}")
+            print(f"Extracted {len(events)} events from {file.filename} using {source} (mode={processing_mode}, fallback={fallback_reason})")
         
-        return {"events": events, "extraction_source": source}
+        return {
+            "events": events,
+            "extraction_source": source,
+            "processing_mode": processing_mode,
+            "fallback_reason": fallback_reason,
+        }
 
     except HTTPException:
         raise
@@ -224,6 +231,8 @@ async def upload_file_async(request: Request, file: UploadFile = File(...)):
             "events": [],
             "error": None,
             "source": None,
+            "processing_mode": None,
+            "fallback_reason": None,
             "progress": "queued",
             "created_at": pytime.time(),
             "started_at": None,
@@ -368,6 +377,8 @@ async def process_job(job_id: str):
 
         job["events"] = events
         job["source"] = parser.source
+        job["processing_mode"] = getattr(parser, "processing_mode", None)
+        job["fallback_reason"] = getattr(parser, "fallback_reason", None)
         job["status"] = "completed"
         job["progress"] = "completed"
         job["finished_at"] = pytime.time()
@@ -430,6 +441,8 @@ async def stream_job(job_id: str):
                 "events": job.get("events") if job.get("status") == "completed" else None,
                 "error": job.get("error"),
                 "source": job.get("source"),
+                "processing_mode": job.get("processing_mode"),
+                "fallback_reason": job.get("fallback_reason"),
                 "filename": job.get("filename"),
             }
             payload_str = json.dumps(payload)
