@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import axios from 'axios';
 import { saveAs } from 'file-saver';
 import FileUploader from '../components/FileUploader';
@@ -18,6 +18,19 @@ import {
 } from 'lucide-react';
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
+const ASYNC_SIZE_THRESHOLD = 2 * 1024 * 1024; // 2MB threshold to auto-switch to async
+const ASYNC_TIMEOUT_MS = 90_000; // 90s safety timeout for streaming
+const COMMON_TIMEZONES = [
+  'UTC',
+  'America/New_York',
+  'America/Chicago',
+  'America/Denver',
+  'America/Los_Angeles',
+  'Europe/London',
+  'Europe/Paris',
+  'Asia/Singapore',
+  'Australia/Sydney',
+];
 
 interface Event {
   title: string;
@@ -44,6 +57,12 @@ export default function Home() {
   const [theme, setTheme] = useState<'dark' | 'light'>('dark');
   const [mounted, setMounted] = useState(false);
   const [mousePos, setMousePos] = useState({ x: 0, y: 0 });
+  const [timezone, setTimezone] = useState<string>('UTC');
+  const [useAsyncUpload, setUseAsyncUpload] = useState<boolean>(false);
+  const [jobId, setJobId] = useState<string | null>(null);
+  const [jobProgress, setJobProgress] = useState<string | null>(null);
+  const eventSourceRef = useRef<EventSource | null>(null);
+  const asyncTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Load theme from localStorage on mount
   useEffect(() => {
@@ -52,6 +71,28 @@ export default function Home() {
       setTheme(savedTheme);
     }
     setMounted(true);
+  }, []);
+
+  // Default timezone from browser when available
+  useEffect(() => {
+    try {
+      const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+      if (tz) setTimezone(tz);
+    } catch (_err) {
+      // Ignore if Intl is unavailable
+    }
+  }, []);
+
+  // Cleanup any open SSE streams on unmount
+  useEffect(() => {
+    return () => {
+      if (eventSourceRef.current) {
+        eventSourceRef.current.close();
+      }
+      if (asyncTimeoutRef.current) {
+        clearTimeout(asyncTimeoutRef.current);
+      }
+    };
   }, []);
 
   // Sync theme with document and localStorage
@@ -110,11 +151,43 @@ export default function Home() {
     return null;
   };
 
-  const handleFileUpload = async (file: File) => {
+  const cleanupStream = useCallback(() => {
+    if (eventSourceRef.current) {
+      eventSourceRef.current.close();
+      eventSourceRef.current = null;
+    }
+    if (asyncTimeoutRef.current) {
+      clearTimeout(asyncTimeoutRef.current);
+      asyncTimeoutRef.current = null;
+    }
+  }, []);
+
+  const applyParsedEvents = (data: any, originLabel?: string): boolean => {
+    const normalizedEvents: Event[] = (data?.events || []).map(normalizeEvent);
+    const validationError = validateEvents(normalizedEvents);
+    if (validationError) {
+      setError(validationError);
+      return false;
+    }
+    setEvents(normalizedEvents);
+    setExtractionSource(data?.extraction_source || data?.source || originLabel || null);
+    setProcessingMode(data?.processing_mode || null);
+    setFallbackReason(data?.fallback_reason || null);
+    setExtractionWarning(data?.extraction_warning || null);
+    setStatusMessage((data?.processing_mode || '') === 'heuristic' ? 'Parsed via fallback (heuristic)' : 'Parsed via AI');
+    setError(null);
+    return true;
+  };
+
+  const handleSyncUpload = async (file: File) => {
+    cleanupStream();
     setLoading(true);
     setStatusMessage('Uploading & parsing...');
     setError(null);
+    setJobId(null);
+    setJobProgress(null);
     setLastFile(file);
+
     const formData = new FormData();
     formData.append('file', file);
 
@@ -124,18 +197,7 @@ export default function Home() {
           'Content-Type': 'multipart/form-data',
         },
       });
-      const normalizedEvents: Event[] = (response.data.events || []).map(normalizeEvent);
-      const validationError = validateEvents(normalizedEvents);
-      if (validationError) {
-        setError(validationError);
-        return;
-      }
-      setEvents(normalizedEvents);
-      setExtractionSource(response.data.extraction_source);
-      setProcessingMode(response.data.processing_mode);
-      setFallbackReason(response.data.fallback_reason);
-      setExtractionWarning(response.data.extraction_warning);
-      setStatusMessage(response.data.processing_mode === 'heuristic' ? 'Parsed via fallback (heuristic)' : 'Parsed via AI');
+      applyParsedEvents(response.data, response.data?.extraction_source || 'sync');
     } catch (err: any) {
       console.error(err);
       let errorMessage = 'Failed to process file. Please try again.';
@@ -158,6 +220,120 @@ export default function Home() {
     }
   };
 
+  const handleAsyncUpload = async (file: File) => {
+    cleanupStream();
+    setLoading(true);
+    setStatusMessage('Enqueueing async job...');
+    setError(null);
+    setLastFile(file);
+    setJobProgress('queued');
+    setFallbackReason(null);
+    setExtractionWarning(null);
+    setExtractionSource(null);
+    setProcessingMode(null);
+
+    const formData = new FormData();
+    formData.append('file', file);
+
+    try {
+      const response = await axios.post(`${API_URL}/upload/async`, formData, {
+        headers: {
+          'Content-Type': 'multipart/form-data',
+        },
+      });
+
+      const newJobId = response.data?.job_id;
+      if (!newJobId) {
+        throw new Error('Async upload missing job id');
+      }
+
+      setJobId(newJobId);
+      setStatusMessage('Job queued, waiting for stream...');
+
+      const streamUrl = `${API_URL}/upload/stream/${newJobId}`;
+      const evtSource = new EventSource(streamUrl);
+      eventSourceRef.current = evtSource;
+
+      asyncTimeoutRef.current = setTimeout(() => {
+        setError('Async processing timed out. Falling back to sync.');
+        setJobProgress('timeout');
+        cleanupStream();
+        setLoading(false);
+        handleSyncUpload(file);
+      }, ASYNC_TIMEOUT_MS);
+
+      evtSource.onmessage = (event) => {
+        try {
+          const payload = JSON.parse(event.data);
+          setJobProgress(payload.progress || payload.status || null);
+          setStatusMessage(`Async: ${payload.status || ''}${payload.progress ? ` (${payload.progress})` : ''}`.trim());
+
+          if (payload.error) {
+            setError(payload.error);
+            cleanupStream();
+            setLoading(false);
+            handleSyncUpload(file);
+            return;
+          }
+
+          if (payload.status === 'completed' && payload.events) {
+            applyParsedEvents(payload, payload.source || 'async');
+            setJobId(null);
+            setJobProgress('completed');
+            setStatusMessage('Async parse complete');
+            cleanupStream();
+            setLoading(false);
+          } else if (payload.status === 'failed') {
+            setError(payload.error || 'Async parsing failed');
+            cleanupStream();
+            setLoading(false);
+            handleSyncUpload(file);
+          }
+        } catch (streamErr) {
+          console.error('Stream parse error', streamErr);
+          setError('Streaming data error. Falling back to sync.');
+          cleanupStream();
+          setLoading(false);
+          handleSyncUpload(file);
+        }
+      };
+
+      evtSource.onerror = () => {
+        setError('Streaming connection lost. Falling back to sync.');
+        cleanupStream();
+        setLoading(false);
+        handleSyncUpload(file);
+      };
+    } catch (err: any) {
+      console.error(err);
+      let errorMessage = 'Failed to start async processing. Trying sync...';
+      if (err.response?.data?.detail) {
+        const detail = err.response.data.detail;
+        if (Array.isArray(detail)) {
+          errorMessage = detail.map((d: any) => d.msg || JSON.stringify(d)).join('; ');
+        } else if (typeof detail === 'string') {
+          errorMessage = detail;
+        } else if (detail?.error) {
+          errorMessage = detail.error;
+        }
+      }
+      setError(errorMessage);
+      setStatusMessage('Falling back to sync...');
+      cleanupStream();
+      setLoading(false);
+      await handleSyncUpload(file);
+    }
+  };
+
+  const handleFileUpload = async (file: File) => {
+    const shouldUseAsync = useAsyncUpload || file.size > ASYNC_SIZE_THRESHOLD;
+    if (shouldUseAsync) {
+      await handleAsyncUpload(file);
+    } else {
+      await handleSyncUpload(file);
+    }
+  };
+
   const handleRetry = () => {
     if (lastFile) {
       handleFileUpload(lastFile);
@@ -174,7 +350,10 @@ export default function Home() {
         return;
       }
 
-      const payload = events.map(evt => ({ ...evt, time: `${evt.time}:00` }));
+      const payload = {
+        events: events.map(evt => ({ ...evt, time: `${evt.time}:00` })),
+        timezone,
+      };
 
       const response = await axios.post(`${API_URL}/generate-ics`, payload, {
         responseType: 'blob',
@@ -199,6 +378,8 @@ export default function Home() {
       setError(message);
     }
   };
+
+  const timezoneOptions = Array.from(new Set([timezone, ...COMMON_TIMEZONES]));
 
   if (!mounted) {
     return <div className="min-h-screen bg-[#020617]" />; // Stable initial render
@@ -284,6 +465,9 @@ export default function Home() {
               {extractionWarning && (
                 <span className="px-3 py-1 rounded-full bg-rose-500/10 border border-rose-500/30 text-rose-400">Warning: {extractionWarning}</span>
               )}
+              {jobId && (
+                <span className="px-3 py-1 rounded-full bg-slate-500/10 border border-slate-500/20 text-slate-200">Async job: {jobProgress || 'queued'}</span>
+              )}
               {lastFile && !loading && (
                 <button
                   onClick={handleRetry}
@@ -292,6 +476,15 @@ export default function Home() {
                   Retry last upload
                 </button>
               )}
+              <label className="flex items-center gap-2 px-3 py-2 rounded-xl bg-slate-500/10 border border-slate-500/20 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={useAsyncUpload}
+                  onChange={(e) => setUseAsyncUpload(e.target.checked)}
+                  className="accent-indigo-500"
+                />
+                <span>Use async streaming (auto for files &gt; 2MB)</span>
+              </label>
             </div>
 
             {loading && (
@@ -342,12 +535,27 @@ export default function Home() {
                   </p>
                 </div>
 
-                <button
-                  onClick={handleExportICS}
-                  className="fancy-button flex items-center px-10 py-5 bg-indigo-600 text-white font-black rounded-2xl hover:scale-[1.05] active:scale-95 shadow-2xl shadow-indigo-600/30 transition-all"
-                >
-                  <Download className="mr-3 h-6 w-6" /> Export to Calendar
-                </button>
+                <div className="flex flex-col md:flex-row items-stretch md:items-center gap-4">
+                  <label className="flex flex-col text-sm font-semibold text-slate-400">
+                    Timezone
+                    <select
+                      className="mt-1 bg-slate-900/70 border border-slate-700 rounded-xl px-3 py-2 text-slate-100 shadow-inner focus:outline-none focus:border-indigo-400"
+                      value={timezone}
+                      onChange={(e) => setTimezone(e.target.value)}
+                    >
+                      {timezoneOptions.map((tz) => (
+                        <option key={tz} value={tz}>{tz}</option>
+                      ))}
+                    </select>
+                  </label>
+
+                  <button
+                    onClick={handleExportICS}
+                    className="fancy-button flex items-center px-10 py-5 bg-indigo-600 text-white font-black rounded-2xl hover:scale-[1.05] active:scale-95 shadow-2xl shadow-indigo-600/30 transition-all"
+                  >
+                    <Download className="mr-3 h-6 w-6" /> Export to Calendar
+                  </button>
+                </div>
               </div>
 
               <div className="relative">

@@ -308,10 +308,17 @@ class EventIn(BaseModel):
             "job_id": self.job_id,
         }
 
+
+class ICSRequest(BaseModel):
+    """Envelope for ICS generation requests with optional timezone."""
+
+    events: List[EventIn]
+    timezone: Optional[str] = "UTC"
+
 @app.post("/generate-ics")
-async def generate_ics(events: List[EventIn]):
+async def generate_ics(payload: ICSRequest):
     """Generate an ICS calendar file from validated event payloads."""
-    if not events:
+    if not payload.events:
         raise HTTPException(
             status_code=400,
             detail="Request body must be a non-empty list of events",
@@ -319,8 +326,8 @@ async def generate_ics(events: List[EventIn]):
 
     try:
         generator = ICSGenerator()
-        normalized_events = [event.to_ics_dict() for event in events]
-        ics_content = generator.generate(normalized_events)
+        normalized_events = [event.to_ics_dict() for event in payload.events]
+        ics_content = generator.generate(normalized_events, timezone=payload.timezone)
 
         if config.DEBUG:
             print(f"Generated ICS file with {len(normalized_events)} events")

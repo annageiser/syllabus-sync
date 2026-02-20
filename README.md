@@ -33,11 +33,11 @@ Syllabus-Sync is a stateless, privacy-focused web application designed to help s
 - Real-time preview
 - One-click calendar export
 
-✅ **Multi-Format Support** (Planned)
-- PDF ✓ (Currently implemented)
-- Excel (.xlsx) 🚧
-- Word (.docx) 🚧
-- HTML 🚧
+✅ **Multi-Format Support**
+- PDF ✅
+- Excel (.xlsx) ✅
+- Word (.docx) ✅
+- HTML ✅
 
 ---
 
@@ -167,6 +167,10 @@ Open your browser and navigate to:
 http://localhost:3000
 ```
 
+### One-Command Dev Helper
+
+From the repo root, run `./dev.sh` to kill any lingering servers on ports 3000/8000 and start both backend and frontend in watch mode.
+
 ---
 
 ## 📖 Usage
@@ -175,7 +179,7 @@ http://localhost:3000
 
 1. **Upload Syllabus**
    - Drag and drop your syllabus PDF onto the upload area, or click "Browse Files"
-   - Supported formats: PDF (XLSX, DOCX, HTML coming soon)
+   - Supported formats: PDF, XLSX, DOCX, HTML
 
 2. **Review Extracted Events**
    - View all extracted events in the interactive table
@@ -244,7 +248,7 @@ export VERTEX_AI_LOCATION="us-central1"
 
 ## 🗺️ Roadmap
 
-### Current Status (v0.1)
+### Current Status (v0.2)
 
 - ✅ PDF parsing with Vertex AI Gemini 1.5 Flash
 - ✅ Event extraction (title, date, type)
@@ -252,10 +256,9 @@ export VERTEX_AI_LOCATION="us-central1"
 - ✅ ICS calendar export
 - ✅ Next.js frontend with Tailwind CSS
 - ✅ FastAPI backend
+- ✅ Multi-format parsing: PDF, Excel, Word, HTML
 
-### Planned Features (v0.2+)
-
-- 🚧 **Multi-format support**: Excel, Word, HTML parsers
+### Planned Features (v0.3+)
 - 🚧 **Enhanced event details**: Time extraction, location, course codes
 - 🚧 **Reminders & alarms**: Configurable reminder offsets
 - 🚧 **Weighting/priority**: Extract assignment weights and set calendar priority

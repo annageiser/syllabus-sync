@@ -1,5 +1,7 @@
 from icalendar import Calendar, Event, Alarm
 from datetime import datetime, timedelta
+from typing import Optional
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 import os
 
 class ICSGenerator:
@@ -10,7 +12,7 @@ class ICSGenerator:
     for import into calendar applications.
     """
     
-    def generate(self, events: list) -> bytes:
+    def generate(self, events: list, timezone: Optional[str] = None) -> bytes:
         """
         Generate an ICS calendar file from a list of events.
         
@@ -22,6 +24,7 @@ class ICSGenerator:
                 - description (str, optional): Event description
                 
         Returns:
+            timezone: IANA timezone string (e.g., "America/New_York"). Defaults to UTC when invalid or missing.
             Bytes containing the ICS file content
             
         Raises:
@@ -30,6 +33,13 @@ class ICSGenerator:
         if not isinstance(events, list):
             raise ValueError("Events must be a list")
         
+        tz_name = timezone or "UTC"
+        try:
+            tzinfo = ZoneInfo(tz_name)
+        except ZoneInfoNotFoundError:
+            tz_name = "UTC"
+            tzinfo = ZoneInfo(tz_name)
+
         cal = Calendar()
         cal.add('prodid', '-//Syllabus-Sync//mxm.dk//')
         cal.add('version', '2.0')
@@ -37,6 +47,7 @@ class ICSGenerator:
         cal.add('method', 'PUBLISH')
         cal.add('x-wr-calname', 'Syllabus Events')
         cal.add('x-wr-caldesc', 'Events extracted from academic syllabus')
+        cal.add('x-wr-timezone', tz_name)
 
         for item in events:
             if not isinstance(item, dict):
@@ -81,8 +92,14 @@ class ICSGenerator:
                             dt_start = base_date
 
                     if isinstance(dt_start, datetime):
+                        if dt_start.tzinfo is None:
+                            dt_start = dt_start.replace(tzinfo=tzinfo)
+                        else:
+                            dt_start = dt_start.astimezone(tzinfo)
+
                         if end_time:
                             dt_end = datetime.combine(dt_start.date(), datetime.strptime(end_time, "%H:%M").time())
+                            dt_end = dt_end.replace(tzinfo=tzinfo)
                             if dt_end <= dt_start:
                                 dt_end = dt_start + timedelta(hours=1)
                         else:
@@ -148,7 +165,7 @@ class ICSGenerator:
                         event.add('rrule', ';'.join(rrule_parts))
 
                     event.add('uid', f'{hash(f"{title}{start_date}{start_time}")}@syllabus-sync.app')
-                    event.add('dtstamp', datetime.now())
+                    event.add('dtstamp', datetime.now(tzinfo))
 
                     cal.add_component(event)
 
