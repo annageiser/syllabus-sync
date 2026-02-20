@@ -3,12 +3,15 @@ from types import SimpleNamespace
 import pandas as pd
 import pdfplumber
 import parsers.pdf_parser as pdf_parser
+import parsers.docx_parser as docx_parser
 import pytest
 
 from config import config
 from parsers.base_parser import BaseParser
 from parsers.pdf_parser import PDFParser
 from parsers.excel_parser import ExcelParser
+from parsers.html_parser import HTMLParser
+from parsers.docx_parser import DocxParser
 
 
 @pytest.fixture(autouse=True)
@@ -149,6 +152,113 @@ def test_excel_parser_flattens_sheet_content(monkeypatch, tmp_path):
     assert events[0]["date"].startswith("2026-")
     assert "Assignment 1" in events[0]["title"]
     assert events[0].get("start_time") is None  # structured parse, no time
+
+
+def test_html_parser_strips_non_content_and_returns_events(monkeypatch, tmp_path):
+    tmp_file = tmp_path / "schedule.html"
+    tmp_file.write_text(
+        """
+        <html>
+            <head>
+                <style>.hidden { display: none; }</style>
+                <script>console.log('ignore me');</script>
+            </head>
+            <body>
+                <nav>Navigation</nav>
+                <h1>Course Schedule</h1>
+                <p>2026-06-10 Exam: Final</p>
+                <footer>Footer text</footer>
+            </body>
+        </html>
+        """,
+        encoding="utf-8",
+    )
+
+    captured = {}
+
+    def fake_extract(self, text):
+        captured["text"] = text
+        self.processing_mode = "heuristic"
+        return [
+            {
+                "title": "Final Exam",
+                "date": "2026-06-10",
+                "type": "exam",
+                "description": "Course Schedule",
+                "confidence": 0.82,
+            }
+        ]
+
+    monkeypatch.setattr(HTMLParser, "extract_events_with_ai", fake_extract)
+
+    parser = HTMLParser()
+    events = parser.parse(str(tmp_file))
+
+    assert len(events) == 1
+    assert events[0]["date"] == "2026-06-10"
+    assert events[0]["type"] == "exam"
+    assert "description" in events[0]
+    assert "confidence" in events[0]
+    assert parser.processing_mode == "heuristic"
+    assert "ignore me" not in captured["text"]
+    assert "Course Schedule" in captured["text"]
+
+
+def test_docx_parser_reads_paragraphs_and_tables(monkeypatch, tmp_path):
+    tmp_file = tmp_path / "sample.docx"
+    tmp_file.write_bytes(b"")
+
+    captured = {}
+
+    class FakeParagraph:
+        def __init__(self, text):
+            self.text = text
+
+    class FakeCell:
+        def __init__(self, text):
+            self.text = text
+
+    class FakeRow:
+        def __init__(self, cells):
+            self.cells = cells
+
+    class FakeTable:
+        def __init__(self):
+            self.rows = [FakeRow([FakeCell("2026-07-01"), FakeCell("Lab kickoff")])]
+
+    class FakeDoc:
+        def __init__(self):
+            self.paragraphs = [FakeParagraph("2026-07-01 Lab kickoff details")]
+            self.tables = [FakeTable()]
+
+    monkeypatch.setattr(docx_parser, "Document", lambda _path: FakeDoc())
+
+    def fake_extract(self, text):
+        captured["text"] = text
+        self.processing_mode = "heuristic"
+        return [
+            {
+                "title": "Lab kickoff",
+                "date": "2026-07-01",
+                "type": "lab",
+                "description": "Hands-on lab",
+                "confidence": 0.9,
+            }
+        ]
+
+    monkeypatch.setattr(DocxParser, "extract_events_with_ai", fake_extract)
+
+    parser = DocxParser()
+    events = parser.parse(str(tmp_file))
+
+    assert len(events) == 1
+    assert events[0]["date"] == "2026-07-01"
+    assert events[0]["type"] == "lab"
+    assert "description" in events[0]
+    assert "confidence" in events[0]
+    assert parser.processing_mode == "heuristic"
+    assert "Lab kickoff" in captured["text"]
+    assert "2026-07-01 | Lab kickoff" in captured["text"]
 
 
 def test_base_parser_fallback_without_ai():
