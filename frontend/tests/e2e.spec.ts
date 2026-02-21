@@ -17,11 +17,12 @@ test('upload, edit, export ICS', async ({ page }) => {
       body: JSON.stringify({
         events: [
           {
-            title: 'Lecture 1',
+            title: 'Lecture 1 - This is a very long title that should wrap to the next line and not be truncated because we are using an AutoResizeTextarea component now.',
             date: '2026-02-20',
+            time: '14:30',
             type: 'lecture',
-            description: 'Intro',
-            module: 'CS101',
+            description: 'This is a very long description that should definitely wrap to the next line and not be truncated. It contains more than 100 characters to ensure that the AutoResizeTextarea component is working correctly and expanding its height to fit the content.',
+            module: 'CS101 - Introduction to Computer Science and Programming',
           },
         ],
         extraction_source: 'E2E Stub',

@@ -110,3 +110,23 @@ Stabilise and productionise Syllabus-Sync. Definition of done: privacy risks res
 - 2026-02-21: Introduced CI pipeline (backend compileall + pytest with coverage gate; frontend lint + build) and retained dependency audits; backend tests now run with 60% coverage threshold (M5 testing & CI).
 - 2026-02-21: Fixed frontend theme toggle to apply light/dark root classes (no SSR blank gate), kept upload flows intact; ran `npm run lint` (pass).
 - 2026-02-21: Fixed frontend runtime issues: resolved CSP blocking inline scripts which caused hydration failure (fixing light mode toggle and file upload unresponsiveness); made FileUploader fully clickable; ran Playwright e2e tests (pass).
+
+## 2026-02-21 — UI Improvements for Syllabus Events
+
+### Scope & Goals
+- Improve UI fields for syllabus events in the frontend.
+- Ensure all text fields (title, description, module, location, etc.) are fully visible without scrolling.
+- Display complete values for date and time fields in upload/edit forms.
+- Make textareas and input fields flexible/responsive for desktop and mobile.
+- Implement auto-expanding textareas for text inputs.
+
+### Changes Implemented
+- Created `AutoResizeTextarea` component in `frontend/components/AutoResizeTextarea.tsx` to automatically adjust height based on content.
+- Updated `EventTable.tsx` to use `AutoResizeTextarea` for `module`, `title`, and `description` fields.
+- Adjusted the grid layout in `EventTable.tsx` to give more space to `Time` (`col-span-2` instead of `col-span-1`).
+- Moved the `Notes` (description) field to a new full-width row (`col-span-12`) below the main event details to accommodate long text.
+- Reduced horizontal padding (`px-2`) for `Date` and `Time` inputs to ensure complete values (YYYY-MM-DD, HH:MM) are visible.
+- Updated E2E tests in `frontend/tests/e2e.spec.ts` to include a long event with a long title and description to verify the UI handles it correctly.
+
+### Test Results
+- Playwright E2E tests passed successfully, confirming that the UI changes did not break any functionality and the long text is handled correctly.
