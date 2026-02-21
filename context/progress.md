@@ -101,3 +101,10 @@ Stabilise and productionise Syllabus-Sync. Definition of done: privacy risks res
 - 2026-02-21: Implemented job_store TTL with background sweeper, scrubbing of sensitive fields, and safer temp file cleanup (M1 privacy lifecycle).
 - 2026-02-21: Hardened AI cache TTL/sweeping with configurable bounds and scrubbed prompts/responses after AI and heuristic extraction (M1 privacy lifecycle).
 - 2026-02-21: Drafted API contract skeleton and aligned ICS tests with envelope (M1 contract alignment).
+- 2026-02-21: Implemented bounded job store with retries/backoff, DLQ, stuck-job sweep, wall-clock timeout, and health/readiness probes; added Redis fallback docs and updated backend tests (M2 worker reliability).
+- 2026-02-21: Added observability config knobs, structured logging with redaction, metrics stubs (counters/gauges/histograms), trace IDs, and `/metrics` snapshot endpoint gated by `ENABLE_METRICS` (M3 logging/observability).
+- 2026-02-21: Instrumented upload/async/ICS generation and job worker/sweeper with structured logs and metrics; added metrics reset helper and updated backend tests to cover metrics endpoint (M3 logging/observability).
+- 2026-02-21: Hardened uploads with magic-byte validation, optional API tokens, configurable rate limits, AV scan hook placeholder, and tightened CORS via config; added backend security tests for rate limit, token enforcement, AV hook, and magic bytes (M4 security/abuse).
+- 2026-02-21: Added frontend CSP and security headers (CSP, Referrer-Policy, Permissions-Policy, X-Frame-Options, nosniff, CORP) and dependency audit workflow (pip-audit, npm audit) to CI (M4 security/abuse).
+- 2026-02-21: Added parser fixtures (PDF/XLSX/DOCX/HTML), SSE contract tests, golden ICS snapshot regression test, and coverage-enforced backend suite; extended security tests for magic-byte docx path (M5 testing & CI).
+- 2026-02-21: Introduced CI pipeline (backend compileall + pytest with coverage gate; frontend lint + build) and retained dependency audits; backend tests now run with 60% coverage threshold (M5 testing & CI).

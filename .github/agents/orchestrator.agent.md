@@ -2,7 +2,7 @@
 name: orchestrator
 description: Coordinates the AI development team. Use this agent for feature requests, bugs, or architectural changes.
 argument-hint: A feature, bug, or improvement to implement.
-tools: ['read', 'edit', 'search', 'agent', 'todo']
+tools: [execute/runNotebookCell, execute/testFailure, execute/getTerminalOutput, execute/awaitTerminal, execute/killTerminal, execute/createAndRunTask, execute/runInTerminal, execute/runTests, read/getNotebookSummary, read/problems, read/readFile, read/readNotebookCellOutput, read/terminalSelection, read/terminalLastCommand, agent/runSubagent, edit/createDirectory, edit/createFile, edit/createJupyterNotebook, edit/editFiles, edit/editNotebook, search/changes, search/codebase, search/fileSearch, search/listDirectory, search/searchResults, search/textSearch, search/usages, todo]
 ---
 
 You are the orchestrator of a team of specialised software engineering agents.
