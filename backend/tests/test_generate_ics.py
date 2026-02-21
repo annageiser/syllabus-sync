@@ -1,21 +1,24 @@
 from fastapi.testclient import TestClient
 
-from main import app
+from backend.main import app
 
 client = TestClient(app)
 
 
 def test_generate_ics_accepts_valid_events():
-    payload = [
-        {
-            "title": "Midterm Exam",
-            "date": "2026-03-15",
-            "time": "10:00:00",
-            "type": "exam",
-            "description": "Ch 1-5",
-            "module": "CS101",
-        }
-    ]
+    payload = {
+        "events": [
+            {
+                "title": "Midterm Exam",
+                "date": "2026-03-15",
+                "time": "10:00:00",
+                "type": "exam",
+                "description": "Ch 1-5",
+                "module": "CS101",
+            }
+        ],
+        "timezone": "UTC",
+    }
 
     response = client.post("/generate-ics", json=payload)
     assert response.status_code == 200
@@ -23,28 +26,35 @@ def test_generate_ics_accepts_valid_events():
 
 
 def test_generate_ics_rejects_bad_date():
-    payload = [
-        {
-            "title": "Lecture",
-            "date": "15-03-2026",  # invalid ISO date
-            "time": "09:00:00",
-            "type": "lecture",
-        }
-    ]
+    payload = {
+        "events": [
+            {
+                "title": "Lecture",
+                "date": "15-03-2026",  # invalid ISO date
+                "time": "09:00:00",
+                "type": "lecture",
+            }
+        ],
+        "timezone": "UTC",
+    }
 
     response = client.post("/generate-ics", json=payload)
     assert response.status_code == 400
-    assert "date" in response.json().get("detail", [{}])[0].get("loc", [])
+    error_loc = response.json().get("detail", [{}])[0].get("loc", [])
+    assert "date" in error_loc
 
 
 def test_generate_ics_requires_time():
-    payload = [
-        {
-            "title": "Project",
-            "date": "2026-04-01",
-            "type": "project",
-        }
-    ]
+    payload = {
+        "events": [
+            {
+                "title": "Project",
+                "date": "2026-04-01",
+                "type": "project",
+            }
+        ],
+        "timezone": "UTC",
+    }
 
     response = client.post("/generate-ics", json=payload)
     assert response.status_code == 400
@@ -74,7 +84,7 @@ def test_integration_upload_then_export(monkeypatch, tmp_path):
                 }
             ]
 
-    monkeypatch.setattr("main.select_parser", lambda _ext: DummyParser())
+    monkeypatch.setattr("backend.main.select_parser", lambda _ext: DummyParser())
 
     upload_resp = client.post(
         "/upload",
@@ -83,6 +93,9 @@ def test_integration_upload_then_export(monkeypatch, tmp_path):
     assert upload_resp.status_code == 200
     events = upload_resp.json()["events"]
     # Simulate frontend edit (no-op) then export
-    export_resp = client.post("/generate-ics", json=events)
+    export_resp = client.post(
+        "/generate-ics",
+        json={"events": events, "timezone": "UTC"},
+    )
     assert export_resp.status_code == 200
     assert "BEGIN:VCALENDAR" in export_resp.text

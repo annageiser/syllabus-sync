@@ -7,7 +7,7 @@ then uses AI via BaseParser to extract event information.
 
 from bs4 import BeautifulSoup
 import os
-from parsers.base_parser import BaseParser
+from backend.parsers.base_parser import BaseParser
 
 
 class HTMLParser(BaseParser):

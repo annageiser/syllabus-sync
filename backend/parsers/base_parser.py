@@ -13,7 +13,7 @@ import os
 import hashlib
 import time
 import copy
-from config import config
+from backend.config import config
 
 # Support both Vertex AI and Google AI SDK
 try:
@@ -81,9 +81,51 @@ class BaseParser:
         
         self.current_year = config.DEFAULT_YEAR
         # Simple in-memory cache for AI responses keyed by normalized text content
-        self.cache_ttl_seconds = 900  # 15 minutes
+        self.cache_ttl_seconds = config.AI_CACHE_TTL_SECONDS
         if not hasattr(self.__class__, "_ai_cache"):
             self.__class__._ai_cache = {}
+        if not hasattr(self.__class__, "_last_cache_sweep_ts"):
+            self.__class__._last_cache_sweep_ts = 0.0
+        self.__class__._maybe_sweep_cache(force=True)
+
+    @classmethod
+    def _ensure_cache_structures(cls):
+        if not hasattr(cls, "_ai_cache"):
+            cls._ai_cache = {}
+        if not hasattr(cls, "_last_cache_sweep_ts"):
+            cls._last_cache_sweep_ts = 0.0
+
+    @classmethod
+    def _sweep_cache(cls, now: float | None = None):
+        cls._ensure_cache_structures()
+        now = now or time.time()
+        ttl = config.AI_CACHE_TTL_SECONDS
+        max_entries = config.AI_CACHE_MAX_ENTRIES
+
+        expired_keys = [key for key, (ts, _events) in cls._ai_cache.items() if now - ts > ttl]
+        for key in expired_keys:
+            cls._ai_cache.pop(key, None)
+
+        if max_entries and len(cls._ai_cache) > max_entries:
+            sorted_items = sorted(cls._ai_cache.items(), key=lambda kv: kv[1][0])
+            excess = len(cls._ai_cache) - max_entries
+            for key, _ in sorted_items[:excess]:
+                cls._ai_cache.pop(key, None)
+
+        cls._last_cache_sweep_ts = now
+
+    @classmethod
+    def _maybe_sweep_cache(cls, now: float | None = None, force: bool = False):
+        cls._ensure_cache_structures()
+        now = now or time.time()
+        if force or (now - cls._last_cache_sweep_ts >= config.AI_CACHE_SWEEP_INTERVAL_SECONDS):
+            cls._sweep_cache(now)
+
+    def _scrub_sensitive_fields(self):
+        self.last_prompt = None
+        self.last_raw_response = None
+        self.last_text_sample = None
+        self.last_text_length = 0
     
     def convert_calendar_week_to_date(self, week_num: int, year: int = None) -> str:
         """
@@ -294,15 +336,16 @@ class BaseParser:
             ftype = getattr(self, "file_type", "unknown") or "unknown"
             print(f"[extract_events_with_ai] file_type={ftype} len={self.last_text_length} sample={self.last_text_sample!r}")
 
-        if self.last_text_length < 30 and not getattr(self, "extraction_warning", None):
-            self.extraction_warning = "low_text_quality"
+        try:
+            if self.last_text_length < 30 and not getattr(self, "extraction_warning", None):
+                self.extraction_warning = "low_text_quality"
 
-        system_prompt = """
+            system_prompt = """
 You are a JSON emitter. Output ONLY valid JSON. No markdown, no extra text.
 Return a JSON array of event objects. If you cannot find events, return an empty JSON array [] and nothing else.
 """
 
-        prompt = f"""
+            prompt = f"""
 Analyze the uploaded academic syllabus or course schedule document and extract ALL events, deadlines, assignments, exams, lectures, and important dates.
 
 Schema (array of objects):
@@ -333,36 +376,35 @@ Examples of good titles:
 - Group work: "Team workshop - Prototype demo and feedback"
 """
 
-        # If no AI model is configured, fall back immediately
-        if not self.model:
-            if config.DEBUG:
-                print("No AI model configured, using heuristic extraction")
-            self.source = "Local Heuristic (Offline)"
-            self.processing_mode = "heuristic"
-            self.fallback_reason = self.fallback_reason or "no_model_configured"
-            return self.heuristic_extraction(text_content)
+            # If no AI model is configured, fall back immediately
+            if not self.model:
+                if config.DEBUG:
+                    print("No AI model configured, using heuristic extraction")
+                self.source = "Local Heuristic (Offline)"
+                self.processing_mode = "heuristic"
+                self.fallback_reason = self.fallback_reason or "no_model_configured"
+                return self.heuristic_extraction(text_content)
 
-        cache_key = None
-        # Check cache before calling the model
-        try:
-            cache_input = normalized_text.encode("utf-8")
-            cache_hash = hashlib.sha256(cache_input).hexdigest()
-            cache_key = (self.source or "local", self.current_year, cache_hash)
-            cached = self._ai_cache.get(cache_key)
-            if cached:
-                ts, cached_events = cached
-                if time.time() - ts < self.cache_ttl_seconds:
-                    self.processing_mode = "ai"
-                    self.fallback_reason = None
-                    return copy.deepcopy(cached_events)
-                else:
-                    # Expired
-                    self._ai_cache.pop(cache_key, None)
-        except Exception:
-            # Cache failures should not block parsing
             cache_key = None
+            # Check cache before calling the model
+            try:
+                cache_input = normalized_text.encode("utf-8")
+                cache_hash = hashlib.sha256(cache_input).hexdigest()
+                cache_key = (self.source or "local", self.current_year, cache_hash)
+                self.__class__._maybe_sweep_cache()
+                cached = self._ai_cache.get(cache_key)
+                if cached:
+                    ts, cached_events = cached
+                    if time.time() - ts < config.AI_CACHE_TTL_SECONDS:
+                        self.processing_mode = "ai"
+                        self.fallback_reason = None
+                        return copy.deepcopy(cached_events)
+                    self._ai_cache.pop(cache_key, None)
+                self.__class__._maybe_sweep_cache()
+            except Exception:
+                # Cache failures should not block parsing
+                cache_key = None
 
-        try:
             full_prompt = f"{system_prompt}\n\n{prompt}\n\nDOCKET CONTENT:\n{text_content}"
             generation_config = {
                 "max_output_tokens": 768,
@@ -453,11 +495,9 @@ Examples of good titles:
             # Store successful result in cache
             if cache_key:
                 try:
-                    self._ai_cache[cache_key] = (time.time(), copy.deepcopy(normalized_events))
-                    # Simple eviction to keep cache bounded
-                    if len(self._ai_cache) > 256:
-                        oldest_key = min(self._ai_cache.items(), key=lambda kv: kv[1][0])[0]
-                        self._ai_cache.pop(oldest_key, None)
+                    now = time.time()
+                    self._ai_cache[cache_key] = (now, copy.deepcopy(normalized_events))
+                    self.__class__._maybe_sweep_cache(now=now, force=True)
                 except Exception:
                     pass
 
@@ -474,112 +514,116 @@ Examples of good titles:
             self.processing_mode = "heuristic"
             self.fallback_reason = f"api_failure: {str(e)}"
             return self.heuristic_extraction(text_content)
+        finally:
+            self._scrub_sensitive_fields()
         
     def heuristic_extraction(self, text: str) -> list:
         """Offline heuristic extraction using regex and keyword matching."""
-        self.processing_mode = "heuristic"
         events = []
         lines = text.split('\n')
 
-        module_name = ""
-        for i in range(min(10, len(lines))):
-            line = lines[i].strip()
-            if "Module" in line or "Course" in line or "Program:" in line:
-                module_name = line.split(":")[-1].strip()
-                break
+        try:
+            module_name = ""
+            for i in range(min(10, len(lines))):
+                line = lines[i].strip()
+                if "Module" in line or "Course" in line or "Program:" in line:
+                    module_name = line.split(":")[-1].strip()
+                    break
 
-        months = r'(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec|January|February|March|April|May|June|July|August|September|October|November|December)'
-        date_pattern = re.compile(rf'(\d{{1,2}})\.?\s+{months}', re.IGNORECASE)
-        euro_pattern = re.compile(r'(\d{1,2})\.(\d{1,2})\.')
-        iso_pattern = re.compile(r'(\d{4})-(\d{2})-(\d{2})')
-        week_pattern = re.compile(r'(KW|CW|Week|Woche)\s*(\d{1,2})', re.IGNORECASE)
-        time_pattern = re.compile(r'(\d{1,2}:\d{2})')
+            months = r'(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec|January|February|March|April|May|June|July|August|September|October|November|December)'
+            date_pattern = re.compile(rf'(\d{{1,2}})\.?\s+{months}', re.IGNORECASE)
+            euro_pattern = re.compile(r'(\d{1,2})\.(\d{1,2})\.')
+            iso_pattern = re.compile(r'(\d{4})-(\d{2})-(\d{2})')
+            week_pattern = re.compile(r'(KW|CW|Week|Woche)\s*(\d{1,2})', re.IGNORECASE)
+            time_pattern = re.compile(r'(\d{1,2}:\d{2})')
 
-        for i, line in enumerate(lines):
-            line = line.strip()
-            if not line:
-                continue
+            for i, line in enumerate(lines):
+                line = line.strip()
+                if not line:
+                    continue
 
-            found_date = None
-            match = date_pattern.search(line)
-            if match:
-                day = match.group(1)
-                month_str = match.group(2)[:3].capitalize()
-                try:
-                    month_map = {"Jan": 1, "Feb": 2, "Mar": 3, "Apr": 4, "May": 5, "Jun": 6,
-                                 "Jul": 7, "Aug": 8, "Sep": 9, "Oct": 10, "Nov": 11, "Dec": 12}
-                    month = month_map.get(month_str, 1)
-                    found_date = f"{self.current_year}-{month:02d}-{int(day):02d}"
-                except Exception:
-                    pass
-
-            if not found_date:
-                match = euro_pattern.search(line)
+                found_date = None
+                match = date_pattern.search(line)
                 if match:
-                    day, month = match.groups()
-                    found_date = f"{self.current_year}-{int(month):02d}-{int(day):02d}"
-
-            if not found_date:
-                match = iso_pattern.search(line)
-                if match:
-                    found_date = match.group(0)
-
-            if not found_date:
-                match = week_pattern.search(line)
-                if match:
+                    day = match.group(1)
+                    month_str = match.group(2)[:3].capitalize()
                     try:
-                        week_num = int(match.group(2))
-                        found_date = self.convert_calendar_week_to_date(week_num)
+                        month_map = {"Jan": 1, "Feb": 2, "Mar": 3, "Apr": 4, "May": 5, "Jun": 6,
+                                     "Jul": 7, "Aug": 8, "Sep": 9, "Oct": 10, "Nov": 11, "Dec": 12}
+                        month = month_map.get(month_str, 1)
+                        found_date = f"{self.current_year}-{month:02d}-{int(day):02d}"
                     except Exception:
                         pass
 
-            if found_date:
-                title = line
-                for pattern in [date_pattern, euro_pattern, iso_pattern, week_pattern]:
-                    title = pattern.sub('', title).strip()
+                if not found_date:
+                    match = euro_pattern.search(line)
+                    if match:
+                        day, month = match.groups()
+                        found_date = f"{self.current_year}-{int(month):02d}-{int(day):02d}"
 
-                if len(title) < 5 and i + 1 < len(lines):
-                    title = f"{title} {lines[i+1].strip()}".strip()
+                if not found_date:
+                    match = iso_pattern.search(line)
+                    if match:
+                        found_date = match.group(0)
 
-                event_type = "lecture"
-                lower_title = title.lower()
-                if any(k in lower_title for k in ["exam", "test", "klausur", "quiz"]):
-                    event_type = "exam"
-                elif any(k in lower_title for k in ["assignment", "due", "moodle", "submission", "homework"]):
-                    event_type = "assignment"
-                elif any(k in lower_title for k in ["project", "presentation"]):
-                    event_type = "project"
+                if not found_date:
+                    match = week_pattern.search(line)
+                    if match:
+                        try:
+                            week_num = int(match.group(2))
+                            found_date = self.convert_calendar_week_to_date(week_num)
+                        except Exception:
+                            pass
 
-                start_time = None
-                match_time = time_pattern.search(line)
-                if match_time:
-                    start_time = match_time.group(1)
+                if found_date:
+                    title = line
+                    for pattern in [date_pattern, euro_pattern, iso_pattern, week_pattern]:
+                        title = pattern.sub('', title).strip()
 
-                location = None
-                if any(k in lower_title for k in ["room", "hall", "building", "auditorium", "lab"]):
-                    location = title
+                    if len(title) < 5 and i + 1 < len(lines):
+                        title = f"{title} {lines[i+1].strip()}".strip()
 
-                description_lines = [line]
-                if i + 1 < len(lines):
-                    next_line = lines[i+1].strip()
-                    if next_line and not any(p.search(next_line) for p in [date_pattern, euro_pattern, iso_pattern, week_pattern]):
-                        description_lines.append(next_line)
+                    event_type = "lecture"
+                    lower_title = title.lower()
+                    if any(k in lower_title for k in ["exam", "test", "klausur", "quiz"]):
+                        event_type = "exam"
+                    elif any(k in lower_title for k in ["assignment", "due", "moodle", "submission", "homework"]):
+                        event_type = "assignment"
+                    elif any(k in lower_title for k in ["project", "presentation"]):
+                        event_type = "project"
 
-                event = {
-                    "module": module_name,
-                    "title": title[:100],
-                    "date": found_date,
-                    "start_time": start_time,
-                    "location": location,
-                    "type": event_type,
-                    "description": " ".join(description_lines)
-                }
+                    start_time = None
+                    match_time = time_pattern.search(line)
+                    if match_time:
+                        start_time = match_time.group(1)
 
-                cleaned = self._clean_event_fields(event)
-                confidence, low_fields = self._evaluate_confidence(cleaned, "heuristic")
-                cleaned["confidence"] = confidence
-                cleaned["low_confidence_fields"] = low_fields
-                events.append(cleaned)
+                    location = None
+                    if any(k in lower_title for k in ["room", "hall", "building", "auditorium", "lab"]):
+                        location = title
 
-        return events
+                    description_lines = [line]
+                    if i + 1 < len(lines):
+                        next_line = lines[i+1].strip()
+                        if next_line and not any(p.search(next_line) for p in [date_pattern, euro_pattern, iso_pattern, week_pattern]):
+                            description_lines.append(next_line)
+
+                    event = {
+                        "module": module_name,
+                        "title": title[:100],
+                        "date": found_date,
+                        "start_time": start_time,
+                        "location": location,
+                        "type": event_type,
+                        "description": " ".join(description_lines)
+                    }
+
+                    cleaned = self._clean_event_fields(event)
+                    confidence, low_fields = self._evaluate_confidence(cleaned, "heuristic")
+                    cleaned["confidence"] = confidence
+                    cleaned["low_confidence_fields"] = low_fields
+                    events.append(cleaned)
+
+            return events
+        finally:
+            self._scrub_sensitive_fields()
 
