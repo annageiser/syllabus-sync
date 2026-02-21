@@ -32,15 +32,31 @@ test('upload, edit, export ICS', async ({ page }) => {
   await page.route(`${API_URL}/generate-ics`, async (route) => {
     await route.fulfill({
       status: 200,
-      status: 200,
-fill({
-URL}/generate-ics`, async (rr',
-                                                            s-events.ics',
+      headers: {
+        'Content-Type': 'text/calendar',
+        'Content-Disposition': 'attachment; filename=syllabus-events.ics',
       },
-      body: 'BEGIN:VCALENDAR\nEND:VCALENDAR',      body: 'BEGIN:VCALENDAR\nEND:VCALENDAR',      body: 'BEGIN:VCALE.lo      body: 'BEGIN:VCALENDAR\nEND:VCALENDAR',      body: 'BEGIN:VCALENDAR\nEND:VCALENDAR',      body: 'BEGIN:VCAL
-                                                     ex                                aft')).toBeVisible();
-  awa  awa  awa  awa  awa  awa  awa  awa  atoBeVisible();
+      body: 'BEGIN:VCALENDAR\nEND:VCALENDAR',
+    });
+  });
 
-  const titleInput = page.locat  const titleInput = page.locat  connpu  const titleInput = page.l);  const tidownload  const = pa  const titleInput = page.loc  a  const titleInput = page.loca{ name: /Export to Calendar/i }).click();
+  await page.goto(APP_URL);
+
+  const fileInput = page.locator('#file-upload');
+  await fileInput.setInputFiles({
+    name: 'sample.pdf',
+    mimeType: 'application/pdf',
+    buffer: Buffer.from('dummy pdf'),
+  });
+
+  await expect(page.getByText('Schedule Draft')).toBeVisible();
+  await expect(page.getByText('E2E Stub')).toBeVisible();
+
+  const titleInput = page.locator('#event-title-0');
+  await titleInput.fill('Lecture 1 - Edited');
+
+  const downloadPromise = page.waitForEvent('download');
+  await page.getByRole('button', { name: /Export to Calendar/i }).click();
   const download = await downloadPromise;
-  expect(download.sugge  expilenam  expect(download.sugge  expilenam  e;
+  expect(download.suggestedFilename()).toContain('syllabus-events');
+});

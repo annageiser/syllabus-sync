@@ -47,6 +47,10 @@ const FileUploader: React.FC<FileUploaderProps> = ({ onFileUpload }) => {
         }
     }, []);
 
+    const handleClick = useCallback(() => {
+        document.getElementById('file-upload')?.click();
+    }, []);
+
     return (
         <div
             id="drop-zone"
@@ -58,6 +62,7 @@ const FileUploader: React.FC<FileUploaderProps> = ({ onFileUpload }) => {
             onDragOver={handleDragOver}
             onDragLeave={handleDragLeave}
             onKeyDown={handleKeyDown}
+            onClick={handleClick}
             tabIndex={0}
             role="button"
             aria-label="Upload syllabus file"
@@ -69,8 +74,9 @@ const FileUploader: React.FC<FileUploaderProps> = ({ onFileUpload }) => {
                 id="file-upload"
                 onChange={handleChange}
                 accept=".pdf,.xlsx,.xls,.docx,.html,.htm"
+                onClick={(e) => e.stopPropagation()}
             />
-            <label htmlFor="file-upload" className="cursor-pointer block">
+            <label htmlFor="file-upload" className="cursor-pointer block" onClick={(e) => e.stopPropagation()}>
                 <div className="relative inline-block mb-6">
                     <div className="absolute inset-0 bg-indigo-500 blur-3xl opacity-20 animate-pulse"></div>
                     {fileName ? (
