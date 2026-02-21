@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import axios from 'axios';
+import axios, { AxiosError } from 'axios';
 import { saveAs } from 'file-saver';
 import FileUploader from '../components/FileUploader';
 import EventTable from '../components/EventTable';
@@ -44,6 +44,23 @@ interface Event {
   low_confidence_fields?: string[];
 }
 
+type RawEvent = Partial<Event> & {
+  start_time?: string;
+};
+
+interface UploadResponse {
+  events?: RawEvent[];
+  extraction_source?: string;
+  source?: string;
+  processing_mode?: string;
+  fallback_reason?: string | null;
+  extraction_warning?: string | null;
+  status?: string;
+  progress?: string;
+  error?: string | null;
+  filename?: string;
+}
+
 export default function Home() {
   const [events, setEvents] = useState<Event[]>([]);
   const [extractionSource, setExtractionSource] = useState<string | null>(null);
@@ -55,7 +72,6 @@ export default function Home() {
   const [error, setError] = useState<string | null>(null);
   const [lastFile, setLastFile] = useState<File | null>(null);
   const [theme, setTheme] = useState<'dark' | 'light'>('dark');
-  const [mounted, setMounted] = useState(false);
   const [mousePos, setMousePos] = useState({ x: 0, y: 0 });
   const [timezone, setTimezone] = useState<string>('UTC');
   const [useAsyncUpload, setUseAsyncUpload] = useState<boolean>(false);
@@ -64,13 +80,13 @@ export default function Home() {
   const eventSourceRef = useRef<EventSource | null>(null);
   const asyncTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // Load theme from localStorage on mount
+  // Load theme from localStorage on mount (client-only)
   useEffect(() => {
+    if (typeof window === 'undefined') return;
     const savedTheme = localStorage.getItem('theme') as 'dark' | 'light';
     if (savedTheme) {
       setTheme(savedTheme);
     }
-    setMounted(true);
   }, []);
 
   // Default timezone from browser when available
@@ -78,7 +94,7 @@ export default function Home() {
     try {
       const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
       if (tz) setTimezone(tz);
-    } catch (_err) {
+    } catch {
       // Ignore if Intl is unavailable
     }
   }, []);
@@ -97,29 +113,31 @@ export default function Home() {
 
   // Sync theme with document and localStorage
   useEffect(() => {
-    if (!mounted) return;
+    if (typeof window === 'undefined') return;
     const root = window.document.documentElement;
     if (theme === 'light') {
       root.classList.add('light');
+      root.classList.remove('dark');
     } else {
       root.classList.remove('light');
+      root.classList.add('dark');
     }
     localStorage.setItem('theme', theme);
-  }, [theme, mounted]);
+  }, [theme]);
 
   // Mouse tracking for "Fancy" glow
   useEffect(() => {
-    if (!mounted) return;
+    if (typeof window === 'undefined') return;
     const handleMouseMove = (e: MouseEvent) => {
       setMousePos({ x: e.clientX, y: e.clientY });
     };
     window.addEventListener('mousemove', handleMouseMove);
     return () => window.removeEventListener('mousemove', handleMouseMove);
-  }, [mounted]);
+  }, []);
 
   const toggleTheme = () => setTheme(prev => prev === 'dark' ? 'light' : 'dark');
 
-  const normalizeEvent = (evt: any): Event => {
+  const normalizeEvent = (evt: RawEvent): Event => {
     const safeTitle = (evt?.title || '').trim() || 'Untitled';
     const safeType = (evt?.type || 'event').toLowerCase();
     const safeDate = (evt?.date || '').slice(0, 10);
@@ -162,7 +180,7 @@ export default function Home() {
     }
   }, []);
 
-  const applyParsedEvents = (data: any, originLabel?: string): boolean => {
+  const applyParsedEvents = (data: UploadResponse, originLabel?: string): boolean => {
     const normalizedEvents: Event[] = (data?.events || []).map(normalizeEvent);
     const validationError = validateEvents(normalizedEvents);
     if (validationError) {
@@ -177,6 +195,30 @@ export default function Home() {
     setStatusMessage((data?.processing_mode || '') === 'heuristic' ? 'Parsed via fallback (heuristic)' : 'Parsed via AI');
     setError(null);
     return true;
+  };
+
+  const extractErrorMessage = (err: unknown, fallback: string): string => {
+    if (axios.isAxiosError(err)) {
+      const detail = (err as AxiosError<{ detail?: unknown; error?: string }>).response?.data?.detail;
+      if (Array.isArray(detail)) {
+        const parts = detail.map((d) => {
+          if (typeof d === 'object' && d && 'msg' in d && typeof (d as { msg?: string }).msg === 'string') {
+            return (d as { msg?: string }).msg as string;
+          }
+          return JSON.stringify(d);
+        });
+        return parts.join('; ');
+      }
+      if (typeof detail === 'string') return detail;
+      if (detail && typeof detail === 'object' && 'error' in (detail as Record<string, unknown>)) {
+        const maybeError = (detail as { error?: unknown }).error;
+        if (typeof maybeError === 'string') return maybeError;
+      }
+      const directError = (err as AxiosError<{ error?: string }>).response?.data?.error;
+      if (typeof directError === 'string') return directError;
+    }
+    if (err instanceof Error) return err.message;
+    return fallback;
   };
 
   const handleSyncUpload = async (file: File) => {
@@ -198,22 +240,10 @@ export default function Home() {
         },
       });
       applyParsedEvents(response.data, response.data?.extraction_source || 'sync');
-    } catch (err: any) {
+    } catch (err: unknown) {
       console.error(err);
-      let errorMessage = 'Failed to process file. Please try again.';
-      if (err.response?.data?.detail) {
-        const detail = err.response.data.detail;
-        if (Array.isArray(detail)) {
-          errorMessage = detail.map((d: any) => d.msg || JSON.stringify(d)).join('; ');
-        } else if (typeof detail === 'string') {
-          errorMessage = detail;
-        } else if (detail?.error) {
-          errorMessage = detail.error;
-        }
-      } else if (err.message === 'Network Error') {
-        errorMessage = 'Server unreachable. Is the backend running?';
-      }
-      setError(errorMessage);
+      const errorMessage = extractErrorMessage(err, 'Failed to process file. Please try again.');
+      setError(errorMessage === 'Network Error' ? 'Server unreachable. Is the backend running?' : errorMessage);
       setStatusMessage('Error');
     } finally {
       setLoading(false);
@@ -264,7 +294,7 @@ export default function Home() {
 
       evtSource.onmessage = (event) => {
         try {
-          const payload = JSON.parse(event.data);
+          const payload: UploadResponse = JSON.parse(event.data);
           setJobProgress(payload.progress || payload.status || null);
           setStatusMessage(`Async: ${payload.status || ''}${payload.progress ? ` (${payload.progress})` : ''}`.trim());
 
@@ -304,19 +334,9 @@ export default function Home() {
         setLoading(false);
         handleSyncUpload(file);
       };
-    } catch (err: any) {
+    } catch (err: unknown) {
       console.error(err);
-      let errorMessage = 'Failed to start async processing. Trying sync...';
-      if (err.response?.data?.detail) {
-        const detail = err.response.data.detail;
-        if (Array.isArray(detail)) {
-          errorMessage = detail.map((d: any) => d.msg || JSON.stringify(d)).join('; ');
-        } else if (typeof detail === 'string') {
-          errorMessage = detail;
-        } else if (detail?.error) {
-          errorMessage = detail.error;
-        }
-      }
+      const errorMessage = extractErrorMessage(err, 'Failed to start async processing. Trying sync...');
       setError(errorMessage);
       setStatusMessage('Falling back to sync...');
       cleanupStream();
@@ -364,26 +384,14 @@ export default function Home() {
 
       const blob = new Blob([response.data], { type: 'text/calendar' });
       saveAs(blob, 'syllabus-events.ics');
-    } catch (err: any) {
+    } catch (err: unknown) {
       console.error("Export Error:", err);
-      let message = 'Failed to generate ICS file.';
-      if (err.response?.data?.detail) {
-        const detail = err.response.data.detail;
-        if (Array.isArray(detail)) {
-          message = detail.map((d: any) => d.msg || JSON.stringify(d)).join('; ');
-        } else if (typeof detail === 'string') {
-          message = detail;
-        }
-      }
+      const message = extractErrorMessage(err, 'Failed to generate ICS file.');
       setError(message);
     }
   };
 
   const timezoneOptions = Array.from(new Set([timezone, ...COMMON_TIMEZONES]));
-
-  if (!mounted) {
-    return <div className="min-h-screen bg-[#020617]" />; // Stable initial render
-  }
 
   return (
     <main className="min-h-screen pb-24 relative overflow-hidden transition-colors duration-500">
