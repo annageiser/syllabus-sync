@@ -4,7 +4,6 @@
 
 > A group project for the module 'Getting started with Generative AI'
 
----
 
 ## 🎯 Overview
 
@@ -49,6 +48,13 @@ Syllabus-Sync is a stateless, privacy-focused web application designed to help s
 - [Next.js 16](https://nextjs.org/) - React framework with server-side rendering
 - [TypeScript](https://www.typescriptlang.org/) - Type-safe JavaScript
 - [Tailwind CSS 4](https://tailwindcss.com/) - Utility-first CSS framework
+### Architecture (snapshot)
+
+**Frontend:** Next.js 16 (TypeScript), Tailwind, Axios, FileSaver; CSP + security headers enabled.
+
+**Backend:** FastAPI with sync upload, async upload + SSE stream, ICS generation; parsers for PDF/XLSX/XLS/DOCX/HTML (AI + heuristic), ICS generator; structured logs, inline metrics, rate/token limits, magic-byte + MIME validation, size cap, optional AV hook placeholder.
+
+**Data Flow:** upload → temp file → validation (size/MIME/magic) → parser → events JSON → temp cleanup; async path enqueues job and streams status via SSE; ICS endpoint accepts `ICSRequest` (`events`, `timezone`) and returns `text/calendar`.
 - [Axios](https://axios-http.com/) - HTTP client for API requests
 - [Lucide React](https://lucide.dev/) - Icon library
 - [FileSaver.js](https://github.com/eligrey/FileSaver.js/) - Client-side file downloads
@@ -139,12 +145,27 @@ cd ../frontend
 npm install
 ```
 
+### Running the Application (dev)
+
+Backend (Terminal 1):
+```bash
+cd backend
+source ../.venv/bin/activate
+uvicorn main:app --reload --host 0.0.0.0 --port 8000
+```
+
+Frontend (Terminal 2):
+```bash
+cd frontend
+NEXT_PUBLIC_API_URL=http://localhost:8000 npm run dev
+```
+
+Access: http://localhost:3000
 ### Running the Application
 
 #### Start Backend (Terminal 1)
 
 ```bash
-cd backend
 source .venv/bin/activate
 python main.py
 ```
@@ -174,7 +195,6 @@ From the repo root, run `./dev.sh` to kill any lingering servers on ports 3000/8
 ---
 
 ## 📖 Usage
-
 ### Basic Workflow
 
 1. **Upload Syllabus**
@@ -199,7 +219,6 @@ From the repo root, run `./dev.sh` to kill any lingering servers on ports 3000/8
    - Import into your calendar app:
      - **Google Calendar**: Settings → Import & Export → Import
      - **Apple Calendar**: File → Import
-     - **Outlook**: File → Open & Export → Import/Export
 
 ---
 
@@ -217,7 +236,6 @@ export VERTEX_AI_LOCATION="us-central1"
 ```
 
 ### Google Cloud Setup
-
 1. Create a Google Cloud Project
 2. Enable Vertex AI API
 3. Authenticate:
@@ -242,7 +260,6 @@ export VERTEX_AI_LOCATION="us-central1"
 
 - Uploaded files are sent to Google Vertex AI for parsing
 - Files are processed ephemerally and not stored by Google
-- See [Google Cloud Privacy Policy](https://cloud.google.com/terms/cloud-privacy-notice)
 
 ---
 
@@ -328,7 +345,6 @@ To add support for a new file format (e.g., Excel):
 3. Update `frontend/components/FileUploader.tsx`:
    ```tsx
    accept=".pdf,.xlsx,.docx,.html"
-   ```
 
 ### Running Tests
 
@@ -342,13 +358,11 @@ cd frontend
 npm test
 ```
 
-### Building for Production
 
 ```bash
 # Frontend production build
 cd frontend
 npm run build
-npm start
 
 # Backend production (use production ASGI server)
 cd backend
@@ -357,7 +371,6 @@ uvicorn main:app --host 0.0.0.0 --port 8000 --workers 4
 
 ---
 
-## 🤝 Contributing
 
 This is a student group project. Contributions, issues, and feature requests are welcome!
 
@@ -365,7 +378,6 @@ This is a student group project. Contributions, issues, and feature requests are
 
 1. Fork the repository
 2. Create a feature branch (`git checkout -b feature/amazing-feature`)
-3. Commit your changes (`git commit -m 'Add amazing feature'`)
 4. Push to the branch (`git push origin feature/amazing-feature`)
 5. Open a Pull Request
 
