@@ -407,7 +407,7 @@ Examples of good titles:
 
             full_prompt = f"{system_prompt}\n\n{prompt}\n\nDOCKET CONTENT:\n{text_content}"
             generation_config = {
-                "max_output_tokens": 768,
+                "max_output_tokens": 8192,
                 "temperature": 0.2,
             }
 

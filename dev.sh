@@ -1,3 +1,6 @@
+#The terminal command for starting the app is `./dev.sh` from the repo root. This script will start both the backend and frontend servers, and also handle cleanup on exit.
+#The repo and app startup is executed by running `./dev.sh` from the terminal. This script will start both the backend and frontend servers, and also handle cleanup on exit. Make sure you have the necessary dependencies installed and environment variables configured before running the script.
+
 #!/bin/bash
 
 # Kill any existing processes on ports 3000 and 8000
@@ -25,6 +28,7 @@ else
     exit 1
 fi
 
+export PYTHONPATH=..
 python3 main.py &
 BACKEND_PID=$!
 
