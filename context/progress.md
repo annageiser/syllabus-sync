@@ -108,3 +108,4 @@ Stabilise and productionise Syllabus-Sync. Definition of done: privacy risks res
 - 2026-02-21: Added frontend CSP and security headers (CSP, Referrer-Policy, Permissions-Policy, X-Frame-Options, nosniff, CORP) and dependency audit workflow (pip-audit, npm audit) to CI (M4 security/abuse).
 - 2026-02-21: Added parser fixtures (PDF/XLSX/DOCX/HTML), SSE contract tests, golden ICS snapshot regression test, and coverage-enforced backend suite; extended security tests for magic-byte docx path (M5 testing & CI).
 - 2026-02-21: Introduced CI pipeline (backend compileall + pytest with coverage gate; frontend lint + build) and retained dependency audits; backend tests now run with 60% coverage threshold (M5 testing & CI).
+- 2026-02-21: Fixed frontend theme toggle to apply light/dark root classes (no SSR blank gate), kept upload flows intact; ran `npm run lint` (pass).
