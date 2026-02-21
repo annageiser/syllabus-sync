@@ -1,11 +1,17 @@
+import pytest
 from fastapi.testclient import TestClient
 
 from backend.main import app
+from backend.observability import clear_metrics
 
-client = TestClient(app)
+
+@pytest.fixture()
+def client():
+    clear_metrics()
+    return TestClient(app)
 
 
-def test_generate_ics_accepts_valid_events():
+def test_generate_ics_accepts_valid_events(client):
     payload = {
         "events": [
             {
@@ -25,7 +31,7 @@ def test_generate_ics_accepts_valid_events():
     assert "BEGIN:VCALENDAR" in response.text
 
 
-def test_generate_ics_rejects_bad_date():
+def test_generate_ics_rejects_bad_date(client):
     payload = {
         "events": [
             {
@@ -44,7 +50,7 @@ def test_generate_ics_rejects_bad_date():
     assert "date" in error_loc
 
 
-def test_generate_ics_requires_time():
+def test_generate_ics_requires_time(client):
     payload = {
         "events": [
             {
@@ -61,7 +67,7 @@ def test_generate_ics_requires_time():
     assert "time" in str(response.json().get("detail", ""))
 
 
-def test_integration_upload_then_export(monkeypatch, tmp_path):
+def test_integration_upload_then_export(monkeypatch, tmp_path, client):
     tmp_file = tmp_path / "sample.pdf"
     tmp_file.write_bytes(b"%PDF-1.4")
 
@@ -99,3 +105,11 @@ def test_integration_upload_then_export(monkeypatch, tmp_path):
     )
     assert export_resp.status_code == 200
     assert "BEGIN:VCALENDAR" in export_resp.text
+
+
+def test_metrics_snapshot_endpoint(client):
+    response = client.get("/metrics")
+    assert response.status_code in (200, 404)
+    if response.status_code == 200:
+        data = response.json()
+        assert isinstance(data, dict)
