@@ -39,6 +39,11 @@ class Config:
     # Application Settings
     DEFAULT_YEAR: int = int(os.getenv("DEFAULT_YEAR", "2026"))
     TEMP_FILE_CLEANUP: bool = os.getenv("TEMP_FILE_CLEANUP", "true").lower() == "true"
+    JOB_TTL_SECONDS: int = int(os.getenv("JOB_TTL_SECONDS", "1800"))
+    JOB_SWEEP_INTERVAL_SECONDS: int = int(os.getenv("JOB_SWEEP_INTERVAL_SECONDS", "300"))
+    AI_CACHE_TTL_SECONDS: int = int(os.getenv("AI_CACHE_TTL_SECONDS", "900"))
+    AI_CACHE_SWEEP_INTERVAL_SECONDS: int = int(os.getenv("AI_CACHE_SWEEP_INTERVAL_SECONDS", "300"))
+    AI_CACHE_MAX_ENTRIES: int = int(os.getenv("AI_CACHE_MAX_ENTRIES", "256"))
     
     # Debugging
     DEBUG: bool = os.getenv("DEBUG", "false").lower() == "true"
@@ -57,6 +62,11 @@ class Config:
         print(f"Backend Port: {cls.BACKEND_PORT}")
         print(f"CORS Origins: {cls.CORS_ORIGINS}")
         print(f"Default Year: {cls.DEFAULT_YEAR}")
+        print(f"Job TTL (s): {cls.JOB_TTL_SECONDS}")
+        print(f"Job Sweep Interval (s): {cls.JOB_SWEEP_INTERVAL_SECONDS}")
+        print(f"AI Cache TTL (s): {cls.AI_CACHE_TTL_SECONDS}")
+        print(f"AI Cache Sweep Interval (s): {cls.AI_CACHE_SWEEP_INTERVAL_SECONDS}")
+        print(f"AI Cache Max Entries: {cls.AI_CACHE_MAX_ENTRIES}")
         print(f"Debug Mode: {cls.DEBUG}")
         print("=" * 50)
 

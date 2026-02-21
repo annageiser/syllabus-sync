@@ -7,8 +7,8 @@ to extract event information.
 
 import pdfplumber
 import os
-from config import config
-from parsers.base_parser import BaseParser
+from backend.config import config
+from backend.parsers.base_parser import BaseParser
 
 try:
 	import pytesseract

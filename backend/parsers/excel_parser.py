@@ -7,7 +7,7 @@ then uses AI via BaseParser to extract event information.
 
 import pandas as pd
 import os
-from parsers.base_parser import BaseParser
+from backend.parsers.base_parser import BaseParser
 
 
 class ExcelParser(BaseParser):

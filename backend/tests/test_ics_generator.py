@@ -1,4 +1,4 @@
-from ics_generator import ICSGenerator
+from backend.ics_generator import ICSGenerator
 
 
 def test_ics_generator_includes_time_location_and_recurrence():

@@ -2,16 +2,17 @@ from types import SimpleNamespace
 
 import pandas as pd
 import pdfplumber
-import parsers.pdf_parser as pdf_parser
-import parsers.docx_parser as docx_parser
+import backend.parsers.pdf_parser as pdf_parser
+import backend.parsers.docx_parser as docx_parser
+import backend.parsers.base_parser as base_parser
 import pytest
 
-from config import config
-from parsers.base_parser import BaseParser
-from parsers.pdf_parser import PDFParser
-from parsers.excel_parser import ExcelParser
-from parsers.html_parser import HTMLParser
-from parsers.docx_parser import DocxParser
+from backend.config import config
+from backend.parsers.base_parser import BaseParser
+from backend.parsers.pdf_parser import PDFParser
+from backend.parsers.excel_parser import ExcelParser
+from backend.parsers.html_parser import HTMLParser
+from backend.parsers.docx_parser import DocxParser
 
 
 @pytest.fixture(autouse=True)
@@ -468,3 +469,69 @@ def test_heuristic_real_syllabus_text_cleaned():
 
     assert events[0]["title"] == "Guest lecture - Ethics in AI"
     assert "Assigned reading" in events[0]["description"]
+
+
+def test_ai_cache_sweep_respects_ttl_and_max(monkeypatch):
+    base_time = 1000.0
+    monkeypatch.setattr(config, "AI_CACHE_TTL_SECONDS", 5)
+    monkeypatch.setattr(config, "AI_CACHE_MAX_ENTRIES", 1)
+    monkeypatch.setattr(config, "AI_CACHE_SWEEP_INTERVAL_SECONDS", 0)
+    monkeypatch.setattr(base_parser.time, "time", lambda: base_time)
+
+    parser = BaseParser()
+    BaseParser._ai_cache = {
+        ("src", parser.current_year, "old"): (
+            base_time - 10,
+            [{"title": "Old", "date": "2026-01-01", "type": "lecture"}],
+        ),
+        ("src", parser.current_year, "recent"): (
+            base_time - 1,
+            [{"title": "Recent", "date": "2026-01-02", "type": "lecture"}],
+        ),
+    }
+    BaseParser._last_cache_sweep_ts = 0.0
+
+    BaseParser._sweep_cache(now=base_time)
+
+    assert ("src", parser.current_year, "old") not in BaseParser._ai_cache
+    assert ("src", parser.current_year, "recent") in BaseParser._ai_cache
+    assert len(BaseParser._ai_cache) == 1
+
+
+def test_ai_prompts_and_responses_scrubbed(monkeypatch):
+    class FakeModel:
+        def generate_content(self, prompt, generation_config=None):
+            return SimpleNamespace(
+                text='[{"title": "AI Event", "date": "2026-01-02", "type": "exam"}]'
+            )
+
+    def fake_init(self):
+        self.model = FakeModel()
+        self.source = "Test AI"
+        self.api_key = "dummy"
+        self.use_vertex = False
+        self.current_year = config.DEFAULT_YEAR
+        self.processing_mode = "ai"
+        self.fallback_reason = None
+        self.last_raw_response = None
+        self.last_prompt = None
+        self.extraction_warning = None
+        self.last_text_length = 0
+        self.last_text_sample = ""
+        self.file_type = None
+        self.cache_ttl_seconds = config.AI_CACHE_TTL_SECONDS
+        self.__class__._ai_cache = {}
+        self.__class__._last_cache_sweep_ts = 0.0
+
+    monkeypatch.setattr(BaseParser, "__init__", fake_init)
+
+    parser = BaseParser()
+    events = parser.extract_events_with_ai("Exam on 2026-01-02")
+
+    assert events
+    assert parser.processing_mode == "ai"
+    assert parser.fallback_reason is None
+    assert parser.last_prompt is None
+    assert parser.last_raw_response is None
+    assert parser.last_text_sample is None
+    assert parser.last_text_length == 0

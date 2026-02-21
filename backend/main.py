@@ -19,12 +19,12 @@ import uuid
 import contextlib
 import logging
 
-from parsers.pdf_parser import PDFParser
-from parsers.excel_parser import ExcelParser
-from parsers.docx_parser import DocxParser
-from parsers.html_parser import HTMLParser
-from ics_generator import ICSGenerator
-from config import config
+from backend.parsers.pdf_parser import PDFParser
+from backend.parsers.excel_parser import ExcelParser
+from backend.parsers.docx_parser import DocxParser
+from backend.parsers.html_parser import HTMLParser
+from backend.ics_generator import ICSGenerator
+from backend.config import config
 
 app = FastAPI(
     title="Syllabus-Sync API",
@@ -54,6 +54,62 @@ ALLOWED_TYPES = {
     ".html": ["text/html", "application/xhtml+xml"],
     ".htm": ["text/html", "application/xhtml+xml"],
 }
+
+
+def touch_job(job: dict) -> None:
+    """Refresh last_touched on a job entry."""
+    job["last_touched"] = pytime.time()
+
+
+def safe_remove_tmp(job: dict) -> None:
+    """Best-effort removal of a job's temp file with guard rails."""
+    tmp_path = job.get("tmp_path")
+    if not tmp_path or not config.TEMP_FILE_CLEANUP:
+        return
+
+    try:
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)
+    except OSError as exc:
+        logger.warning("Failed to remove temp file %s: %s", tmp_path, exc)
+    finally:
+        job["tmp_path"] = None
+
+
+def scrub_job_entry(job: dict) -> None:
+    """Remove sensitive fields from a job entry once processing is done."""
+    for key in ("ip", "tmp_path", "ext", "parser"):
+        job.pop(key, None)
+    job["scrubbed"] = True
+    touch_job(job)
+
+
+def cleanup_expired_jobs(store: dict, now: Optional[float] = None) -> int:
+    """Remove expired jobs based on TTL and last touch time."""
+    if config.JOB_TTL_SECONDS <= 0:
+        return 0
+
+    current_time = now or pytime.time()
+    removed = 0
+    for job_id, job in list(store.items()):
+        finished_at = job.get("finished_at")
+        created_at = job.get("created_at")
+        last_touched = job.get("last_touched")
+
+        base_time = current_time
+        if finished_at is not None:
+            base_time = finished_at
+        elif created_at is not None:
+            base_time = created_at
+
+        touch_time = last_touched if last_touched is not None else base_time
+        anchor = max(base_time, touch_time)
+        if current_time - anchor > config.JOB_TTL_SECONDS:
+            safe_remove_tmp(job)
+            scrub_job_entry(job)
+            store.pop(job_id, None)
+            removed += 1
+    return removed
 
 
 def select_parser(file_extension: str):
@@ -230,6 +286,7 @@ async def upload_file_async(request: Request, file: UploadFile = File(...)):
             )
 
         job_id = str(uuid.uuid4())
+        job_created = pytime.time()
         job_store[job_id] = {
             "status": "queued",
             "filename": file.filename,
@@ -240,13 +297,15 @@ async def upload_file_async(request: Request, file: UploadFile = File(...)):
             "fallback_reason": None,
             "extraction_warning": None,
             "progress": "queued",
-            "created_at": pytime.time(),
+            "created_at": job_created,
             "started_at": None,
             "finished_at": None,
             "parser": parser.__class__.__name__,
             "tmp_path": tmp_path,
             "ext": file_extension,
             "ip": ip,
+            "last_touched": job_created,
+            "scrubbed": False,
         }
 
         await job_queue.put(job_id)
@@ -321,7 +380,7 @@ async def generate_ics(payload: ICSRequest):
     if not payload.events:
         raise HTTPException(
             status_code=400,
-            detail="Request body must be a non-empty list of events",
+            detail="Request body must include a non-empty 'events' array",
         )
 
     try:
@@ -359,9 +418,18 @@ async def process_job(job_id: str):
     if not job:
         return
 
+    def mark_failed(message: str) -> None:
+        job["status"] = "failed"
+        job["progress"] = "failed"
+        job["error"] = message
+        job["finished_at"] = pytime.time()
+        touch_job(job)
+
+    touch_job(job)
     job["status"] = "processing"
     job["progress"] = "parsing"
     job["started_at"] = pytime.time()
+    touch_job(job)
 
     tmp_path = job.get("tmp_path")
     file_extension = job.get("ext")
@@ -369,23 +437,21 @@ async def process_job(job_id: str):
     try:
         parser = select_parser(file_extension)
         if not parser:
-            job["status"] = "failed"
-            job["error"] = f"Unsupported file format: {file_extension}"
+            mark_failed(f"Unsupported file format: {file_extension}")
             return
 
         try:
             job["progress"] = "extracting"
+            touch_job(job)
             events = await asyncio.wait_for(
                 asyncio.to_thread(parser.parse, tmp_path),
                 timeout=AI_PARSE_TIMEOUT_SECONDS,
             )
         except asyncio.TimeoutError:
-            job["status"] = "failed"
-            job["error"] = "Parsing timed out. Please try a smaller file."
+            mark_failed("Parsing timed out. Please try a smaller file.")
             return
         except RuntimeError as e:
-            job["status"] = "failed"
-            job["error"] = f"Google Cloud configuration error: {str(e)}"
+            mark_failed(f"Google Cloud configuration error: {str(e)}")
             return
 
         job["events"] = events
@@ -396,18 +462,20 @@ async def process_job(job_id: str):
         job["status"] = "completed"
         job["progress"] = "completed"
         job["finished_at"] = pytime.time()
+        touch_job(job)
 
     except Exception as e:
         job["status"] = "failed"
+        job["progress"] = "failed"
         job["error"] = str(e)
+        job["finished_at"] = pytime.time()
+        touch_job(job)
         if config.DEBUG:
             import traceback
             traceback.print_exc()
     finally:
-        if tmp_path and config.TEMP_FILE_CLEANUP and os.path.exists(tmp_path):
-            os.remove(tmp_path)
-            if config.DEBUG:
-                print(f"Cleaned up temporary file: {tmp_path}")
+        safe_remove_tmp(job)
+        scrub_job_entry(job)
 
 
 async def job_worker():
@@ -419,11 +487,25 @@ async def job_worker():
         job_queue.task_done()
 
 
+async def job_store_sweeper():
+    """Periodically purge expired jobs and leftovers."""
+    interval = config.JOB_SWEEP_INTERVAL_SECONDS
+    if interval <= 0:
+        return
+
+    while True:
+        await asyncio.sleep(interval)
+        cleanup_expired_jobs(job_store, pytime.time())
+
+
 @app.on_event("startup")
 async def startup_worker():
     global job_queue
     job_queue = asyncio.Queue()
     app.state.worker_task = asyncio.create_task(job_worker())
+    app.state.sweeper_task = None
+    if config.JOB_SWEEP_INTERVAL_SECONDS > 0:
+        app.state.sweeper_task = asyncio.create_task(job_store_sweeper())
 
 
 @app.on_event("shutdown")
@@ -433,6 +515,11 @@ async def shutdown_worker():
         task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await task
+    sweeper_task = getattr(app.state, "sweeper_task", None)
+    if sweeper_task:
+        sweeper_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await sweeper_task
 
 
 @app.get("/upload/stream/{job_id}")
@@ -442,12 +529,15 @@ async def stream_job(job_id: str):
     if job_id not in job_store:
         raise HTTPException(status_code=404, detail="Job not found")
 
+    touch_job(job_store[job_id])
+
     async def event_generator():
         last_status = None
         while True:
             job = job_store.get(job_id)
             if not job:
                 break
+            touch_job(job)
             payload = {
                 "job_id": job_id,
                 "status": job.get("status"),
