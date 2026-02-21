@@ -8,23 +8,36 @@ test('upload, edit, export ICS', async ({ page }) => {
   page.on('pageerror', err => console.log('PAGE ERROR:', err.message));
   page.on('requestfailed', request => console.log('REQUEST FAILED:', request.url(), request.failure()?.errorText));
 
+  let uploadCount = 0;
   // Stub backend upload and generate-ics endpoints
   await page.route(`${API_URL}/upload`, async (route) => {
     console.log('Intercepted /upload');
+    uploadCount++;
+    const events = uploadCount === 1 ? [
+      {
+        title: 'Lecture 1 - This is a very long title that should wrap to the next line and not be truncated because we are using an AutoResizeTextarea component now.',
+        date: '2026-02-20',
+        time: '14:30',
+        type: 'lecture',
+        description: 'This is a very long description that should definitely wrap to the next line and not be truncated. It contains more than 100 characters to ensure that the AutoResizeTextarea component is working correctly and expanding its height to fit the content.',
+        module: 'CS101 - Introduction to Computer Science and Programming',
+      },
+    ] : [
+      {
+        title: 'Lecture 2',
+        date: '2026-02-21',
+        time: '10:00',
+        type: 'lecture',
+        description: 'Second upload event',
+        module: 'CS101',
+      }
+    ];
+
     await route.fulfill({
       status: 200,
       contentType: 'application/json',
       body: JSON.stringify({
-        events: [
-          {
-            title: 'Lecture 1 - This is a very long title that should wrap to the next line and not be truncated because we are using an AutoResizeTextarea component now.',
-            date: '2026-02-20',
-            time: '14:30',
-            type: 'lecture',
-            description: 'This is a very long description that should definitely wrap to the next line and not be truncated. It contains more than 100 characters to ensure that the AutoResizeTextarea component is working correctly and expanding its height to fit the content.',
-            module: 'CS101 - Introduction to Computer Science and Programming',
-          },
-        ],
+        events,
         extraction_source: 'E2E Stub',
       }),
     });
@@ -52,6 +65,27 @@ test('upload, edit, export ICS', async ({ page }) => {
 
   await expect(page.getByText('Schedule Draft')).toBeVisible();
   await expect(page.getByText('E2E Stub')).toBeVisible();
+
+  // Check if YearHeatmap is rendered
+  await expect(page.getByText('Event Activity')).toBeVisible();
+  await expect(page.getByText('(2026)')).toBeVisible();
+  // Check if the tile for 2026-02-20 is rendered and has the correct color class
+  await expect(page.getByText('2026-02-20: 1 event')).toBeAttached();
+
+  // Second upload to test aggregation
+  await fileInput.setInputFiles({
+    name: 'sample2.pdf',
+    mimeType: 'application/pdf',
+    buffer: Buffer.from('dummy pdf 2'),
+  });
+
+  // Check if both events are in the table
+  await expect(page.locator('#event-title-0')).toHaveValue(/Lecture 1/);
+  await expect(page.locator('#event-title-1')).toHaveValue('Lecture 2');
+
+  // Check if heatmap has both events
+  await expect(page.getByText('2026-02-20: 1 event')).toBeAttached();
+  await expect(page.getByText('2026-02-21: 1 event')).toBeAttached();
 
   const titleInput = page.locator('#event-title-0');
   await titleInput.fill('Lecture 1 - Edited');

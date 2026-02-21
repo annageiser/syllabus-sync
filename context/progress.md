@@ -130,3 +130,40 @@ Stabilise and productionise Syllabus-Sync. Definition of done: privacy risks res
 
 ### Test Results
 - Playwright E2E tests passed successfully, confirming that the UI changes did not break any functionality and the long text is handled correctly.
+
+## 2026-02-21 — Year Heatmap Feature
+
+### Scope & Goals
+- Visualize event activity per day over the year with a heatmap in the UI.
+- Display every day of the year (1 - 365/366) as a small tile/cell.
+- Implement a color scale (e.g., light = few events, dark = many events).
+- Add a tooltip/hover state showing the date and number of events.
+- Generate test data and verify the heatmap tiles are correctly colored and tooltips are displayed in E2E tests.
+
+### Changes Implemented
+- Created `YearHeatmap` component in `frontend/components/YearHeatmap.tsx` to render a GitHub-style contribution graph.
+- Integrated `YearHeatmap` into the main dashboard (`frontend/app/page.tsx`) above the `EventTable`.
+- Implemented dynamic color scaling using Tailwind CSS `bg-indigo-*` classes based on event intensity.
+- Added hover tooltips to display the exact date and event count for each day.
+- Updated Playwright E2E tests (`frontend/tests/e2e.spec.ts`) to verify the heatmap renders correctly and the specific date tile is attached to the DOM.
+
+### Test Results
+- Playwright E2E tests passed successfully, confirming the heatmap component renders correctly with the stubbed data and the tooltips are present.
+
+## 2026-02-21 — Full-Width Layout & Event Aggregation
+
+### Scope & Goals
+- Scale the entire app to full browser width.
+- Aggregate extracted events from multiple uploads.
+- Persist aggregated events locally using `localStorage`.
+- Ensure the `YearHeatmap` visualizes all aggregated events.
+
+### Changes Implemented
+- Updated `frontend/app/page.tsx` to use a full-width layout (`w-full px-4 md:px-8 lg:px-12`).
+- Modified `applyParsedEvents` to append new events to the existing state instead of overwriting.
+- Added `localStorage` integration to save and load aggregated events across app reloads.
+- Added a "Clear Data" button to allow users to reset their aggregated events.
+- Updated Playwright E2E tests to simulate multiple uploads and verify that events are correctly aggregated in both the table and the heatmap.
+
+### Test Results
+- Playwright E2E tests passed successfully, confirming that multiple uploads are aggregated and displayed correctly.

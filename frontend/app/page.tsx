@@ -5,6 +5,7 @@ import axios, { AxiosError } from 'axios';
 import { saveAs } from 'file-saver';
 import FileUploader from '../components/FileUploader';
 import EventTable from '../components/EventTable';
+import YearHeatmap from '../components/YearHeatmap';
 import {
   Calendar,
   Download,
@@ -99,6 +100,28 @@ export default function Home() {
     }
   }, []);
 
+  // Load events from localStorage on mount
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const savedEvents = localStorage.getItem('syllabus_events');
+    if (savedEvents) {
+      try {
+        const parsed = JSON.parse(savedEvents);
+        if (Array.isArray(parsed)) {
+          setEvents(parsed);
+        }
+      } catch (e) {
+        console.error('Failed to parse saved events', e);
+      }
+    }
+  }, []);
+
+  // Save events to localStorage whenever they change
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    localStorage.setItem('syllabus_events', JSON.stringify(events));
+  }, [events]);
+
   // Cleanup any open SSE streams on unmount
   useEffect(() => {
     return () => {
@@ -187,7 +210,7 @@ export default function Home() {
       setError(validationError);
       return false;
     }
-    setEvents(normalizedEvents);
+    setEvents(prev => [...prev, ...normalizedEvents]);
     setExtractionSource(data?.extraction_source || data?.source || originLabel || null);
     setProcessingMode(data?.processing_mode || null);
     setFallbackReason(data?.fallback_reason || null);
@@ -417,7 +440,7 @@ export default function Home() {
         }}
       ></div>
 
-      <div className="max-w-6xl mx-auto px-4 relative z-10">
+      <div className="w-full px-4 md:px-8 lg:px-12 mx-auto relative z-10">
         {/* Navigation / Header Bar */}
         <nav className="flex justify-between items-center py-8 mb-12 animate-slide-up">
           <div className="flex items-center gap-3">
@@ -457,7 +480,7 @@ export default function Home() {
           </p>
         </header>
 
-        <div className="max-w-4xl mx-auto space-y-16">
+        <div className="w-full space-y-16">
           {/* Main Action Area */}
           <section id="upload-zone" className="animate-slide-up" style={{ animationDelay: '200ms' }}>
             <FileUploader onFileUpload={handleFileUpload} />
@@ -558,6 +581,18 @@ export default function Home() {
                   </label>
 
                   <button
+                    onClick={() => {
+                      if (confirm('Are you sure you want to clear all aggregated events?')) {
+                        setEvents([]);
+                        localStorage.removeItem('syllabus_events');
+                      }
+                    }}
+                    className="flex items-center px-6 py-5 bg-rose-600/20 text-rose-400 font-black rounded-2xl hover:bg-rose-600/30 active:scale-95 transition-all border border-rose-500/30"
+                  >
+                    Clear Data
+                  </button>
+
+                  <button
                     onClick={handleExportICS}
                     className="fancy-button flex items-center px-10 py-5 bg-indigo-600 text-white font-black rounded-2xl hover:scale-[1.05] active:scale-95 shadow-2xl shadow-indigo-600/30 transition-all"
                   >
@@ -567,6 +602,7 @@ export default function Home() {
               </div>
 
               <div className="relative">
+                <YearHeatmap events={events} />
                 <EventTable
                   events={events}
                   onUpdate={(i, e) => {
