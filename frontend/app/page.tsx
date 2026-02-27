@@ -602,7 +602,7 @@ export default function Home() {
               </div>
 
               <div className="relative">
-                <YearHeatmap events={events} />
+                {/* <YearHeatmap events={events} /> */}
                 <EventTable
                   events={events}
                   onUpdate={(i, e) => {

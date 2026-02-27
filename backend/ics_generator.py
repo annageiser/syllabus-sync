@@ -146,8 +146,8 @@ class ICSGenerator:
                             alarm.add('description', f'Reminder: {title}')
                             alarm.add('trigger', timedelta(minutes=-minutes_before))
                             event.add_component(alarm)
-                    elif event_type in ['assignment', 'exam', 'project']:
-                        # Preserve default reminder when user did not set any
+                    else:
+                        # Add default 24-hour reminder for all events
                         alarm = Alarm()
                         alarm.add('action', 'DISPLAY')
                         alarm.add('description', f'Reminder: {title}')
