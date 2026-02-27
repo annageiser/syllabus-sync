@@ -113,17 +113,19 @@ Syllabus-Sync is a stateless, privacy-focused web application designed to help s
 
 ### Installation
 
-#### 1. Clone the Repository
+#### 1. Get the Code
 
+If you received this project as a zip file, extract it and open the folder in your terminal:
 ```bash
-git clone https://github.com/annageiser/Syllabus-Sync.git
-cd Syllabus-Sync
+cd path/to/syllabus-sync
 ```
+
+*(Alternatively, clone the repository: `git clone https://github.com/annageiser/Syllabus-Sync.git && cd Syllabus-Sync`)*
 
 #### 2. Backend Setup
 
 ```bash
-# From repo root
+# From the project root directory
 python -m venv .venv
 source .venv/bin/activate  # On Windows: .venv\Scripts\activate
 
@@ -139,47 +141,35 @@ gcloud auth application-default login
 #### 3. Frontend Setup
 
 ```bash
-cd ../frontend
+# From the project root directory
+cd frontend
 
 # Install dependencies
 npm install
 ```
 
-### Running the Application (dev)
-
-Backend (Terminal 1):
-```bash
-cd backend
-source ../.venv/bin/activate
-uvicorn main:app --reload --host 0.0.0.0 --port 8000
-```
-
-Frontend (Terminal 2):
-```bash
-cd frontend
-NEXT_PUBLIC_API_URL=http://localhost:8000 npm run dev
-```
-
-Access: http://localhost:3000
 ### Running the Application
+
+You will need two terminal windows to run the backend and frontend simultaneously.
 
 #### Start Backend (Terminal 1)
 
 ```bash
-source .venv/bin/activate
-python main.py
+# From the project root directory
+source .venv/bin/activate  # On Windows: .venv\Scripts\activate
+cd backend
+uvicorn main:app --reload --host 0.0.0.0 --port 8000
 ```
-
-Backend will run on `http://localhost:8000`
+*The backend API will run on `http://localhost:8000`*
 
 #### Start Frontend (Terminal 2)
 
 ```bash
+# From the project root directory
 cd frontend
-npm run dev
+NEXT_PUBLIC_API_URL=http://localhost:8000 npm run dev
 ```
-
-Frontend will run on `http://localhost:3000`
+*The frontend will run on `http://localhost:3000`*
 
 #### Access the App
 
