@@ -179,13 +179,32 @@ class BaseParser:
         return None
 
     def _close_unbalanced_delimiters(self, text: str) -> str:
-        """Close any unbalanced brackets/braces to handle truncated output."""
-        opens = text.count("[") - text.count("]")
-        if opens > 0:
-            text += "]" * opens
-        brace_opens = text.count("{") - text.count("}")
+        """Close any unbalanced brackets/braces and strings to handle truncated output."""
+        # Check if we are inside a string
+        in_string = False
+        escape = False
+        for char in text:
+            if escape:
+                escape = False
+            elif char == '\\':
+                escape = True
+            elif char == '"':
+                in_string = not in_string
+                
+        if in_string:
+            text += '"'
+            
+        # Remove strings to safely count brackets
+        no_escapes = text.replace('\\"', '')
+        no_strings = re.sub(r'"[^"]*"', '', no_escapes)
+        
+        opens = no_strings.count("[") - no_strings.count("]")
+        brace_opens = no_strings.count("{") - no_strings.count("}")
+        
         if brace_opens > 0:
             text += "}" * brace_opens
+        if opens > 0:
+            text += "]" * opens
         return text
 
     def _try_parse_json(self, raw_text: str):
